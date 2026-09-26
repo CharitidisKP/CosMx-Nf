@@ -1,0 +1,6 @@
+sample_id,include,file_prefix,data_dir,patient_id,treatment,timepoint,slide_id,batch,subset_fovs,subject_id
+A_T0_S1,TRUE,Run1_Slide1,data/Run1_Slide1,P01,arm_A,T0,slide_1,run_1,,P01
+A_T6_S1,TRUE,Run1_Slide2,data/Run1_Slide2,P01,arm_A,T6,slide_2,run_1,,P01
+B_T0_S1,TRUE,Run2_Slide1,data/Run2_Slide1,P02,arm_B,T0,slide_3,run_2,,P02
+B_T6_S1,FALSE,Run2_Slide2,data/Run2_Slide2,P02,arm_B,T6,slide_4,run_2,,P02
+Ctrl_S1,TRUE,Run1_Slide3,data/Run1_Slide3,C01,control,T0,slide_5,run_1,1;2;3;4;5;6;7;8,C01

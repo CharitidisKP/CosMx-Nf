@@ -1,0 +1,2 @@
+# demo fixtures are 17 MB of generated data -- rebuild with make_demo.R
+demo_*.rds

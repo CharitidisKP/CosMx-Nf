@@ -1,0 +1,45 @@
+# Nextflow
+.nextflow*
+work/
+Runs/
+tmp/
+
+# Pipeline output trees (historical ones live outside git)
+results/
+results_*/
+Archive/
+Manual_run_Results/
+
+# Scratch and working docs kept out of the repo
+Other/
+
+# R session state
+.RData
+.Rhistory
+.Rproj.user/
+
+# Knit artifacts and editor scratch
+*_files/
+figure/
+*.html
+*.pdf
+*.bak_*
+notebooks/*.txt
+notebooks/*.log
+notebooks/.vdoc.*
+notebooks/.vscode/
+
+# Logs and OS noise
+omnipathr-log/
+.DS_Store
+
+# Reference profile matrices -- staged per machine, not shipped
+assets/profiles/
+
+# Working docs -- for the next session, not for the repo
+handoff.md
+
+# Site settings and the real sample sheets -- per machine, never in git
+conf/site.yaml
+assets/private/
+data/

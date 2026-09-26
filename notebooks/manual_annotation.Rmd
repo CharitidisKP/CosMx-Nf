@@ -1,0 +1,1211 @@
+---
+title: 'CosMx Discovery: Manual Cluster Annotation'
+author: "CosMx-Nf"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: hide
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    latex_engine: xelatex
+    geometry: landscape, margin=1.5cm
+params:
+  run_id: default
+  cluster_basis: leiden_clus_res0.3
+  giotto_dir: ''
+  top_n: 10
+  python_path: ''
+  overwrite_labels: false
+  error_on_incomplete: false
+  compare_cols: "insitutype_unsup,insitutype_sup_KPMP,insitutype_sup_HCA_Kidney,ht_call"
+  subcluster: "3"
+  subcluster_res: 0.5
+  b_lineage: true
+  b_min_genes: 2
+  b_min_counts: 80
+  b_res: 0.6
+  if_control: ""
+---
+
+Explores the **discovery** output of run `run_id` (the merged Giotto object, before annotation)
+and writes the `cluster_id,label` CSV that the `annotate` stage (`bin/apply_labels.R`) consumes.
+
+Paths follow `run.sh`: every run lives beside this repository in `Runs/<run_id>/results/`. Re-knit for another run or resolution by overriding params, e.g.
+`rmarkdown::render("manual_annotation.Rmd", params = list(run_id = "full", cluster_basis = "leiden_clus_res0.8"))`.
+
+```{r setup, include=FALSE}
+
+# PDF has no code folding, so echoing there buries the figures in source listings
+TO_PDF <- identical(knitr::opts_knit$get("rmarkdown.pandoc.to"), "latex")
+
+knitr::opts_chunk$set(echo = !TO_PDF, message = FALSE, warning = FALSE,
+                      dev = "png", dpi = 200, fig.width = 8, fig.height = 6,
+                      out.width = "100%", fig.align = "center")
+
+```
+
+```{r Environment}
+
+library(Giotto)
+library(Matrix)
+library(tidyverse)
+
+Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
+if (nzchar(params$python_path)) Sys.setenv(RETICULATE_PYTHON = params$python_path)
+
+find_pipe <- function(d = getwd()) {
+  while (!file.exists(file.path(d, "main.nf"))) {
+    if (dirname(d) == d) {
+      stop("main.nf not found above ", getwd(), " -- open this notebook from inside the Pipeline repo")
+    }
+    d <- dirname(d)
+  }
+  normalizePath(d)
+}
+
+PIPE_DIR    <- find_pipe()
+RES_DIR     <- file.path(dirname(PIPE_DIR), "Runs", params$run_id, "results")
+# Subcluster columns live on the subcluster object, Leiden columns on the discover one
+IS_SUB      <- startsWith(params$cluster_basis, "sub_")
+GIOTTO_DIR  <- if (nzchar(params$giotto_dir)) params$giotto_dir else
+  file.path(RES_DIR, "objects", if (IS_SUB) "subcluster" else "discover", "giotto")
+DIAG_DIR    <- file.path(RES_DIR, "tables", if (IS_SUB) "05_subclustering" else "03_clustering", "markers")
+LABELS_OUT  <- file.path(RES_DIR, "tables", "06_annotation", "labels",
+                         str_c("cluster_labels.", params$cluster_basis, ".csv"))
+MARKERS_CSV <- file.path(PIPE_DIR, "assets", "canonical_markers.csv")
+CLUSTER_COL <- params$cluster_basis
+
+if (!dir.exists(GIOTTO_DIR)) stop("No discover object for run '", params$run_id, "' at ", GIOTTO_DIR)
+
+# S13b re-clusters a parent cluster, so it has nothing to do when the basis IS the subclusters
+SUB_OK <- nzchar(params$subcluster) && !startsWith(CLUSTER_COL, "sub_")
+
+```
+
+```{r Helpers}
+
+theme_pixel <- function() theme_bw(base_size = 11) + theme(panel.grid = element_blank())
+
+scale_diverging <- function(...) {
+  scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0, ...)
+}
+
+read_diag <- function(suffix) {
+  f <- file.path(DIAG_DIR, str_c(CLUSTER_COL, suffix))
+  if (file.exists(f)) read_csv(f, show_col_types = FALSE) else NULL
+}
+
+# Mean expression and fraction of cells detecting each gene, as genes x clusters matrices
+cluster_stats <- function(m, groups) {
+  ind <- t(fac2sparse(groups))
+  n   <- colSums(ind)
+  list(mean = sweep(as.matrix(m %*% ind), 2, n, "/"),
+       pct  = sweep(as.matrix((m > 0) %*% ind), 2, n, "/"))
+}
+
+z_by_gene <- function(mat) {
+  z <- t(scale(t(mat)))
+  z[!is.finite(z)] <- 0
+  z
+}
+
+to_long <- function(mat, value) {
+  mat |>
+    as_tibble(rownames = "gene") |>
+    pivot_longer(-gene, names_to = "cluster", values_to = value)
+}
+
+fig_dim  <- function(n, per, lo, hi = 40) max(lo, min(hi, n * per))
+fig_rows <- function(n, n_facets = 1, per = 0.15, pad = 1.5, hi = 60) {
+  min(hi, n * per + n_facets * 0.15 + pad)
+}
+
+```
+
+# S0 · Load discovery object
+
+```{r Load}
+
+g <- loadGiotto(GIOTTO_DIR)
+
+cells <- getCellMetadata(g, output = "data.table") |> as_tibble()
+norm  <- getExpression(g, values = "normalized", output = "matrix")
+stopifnot(CLUSTER_COL %in% names(cells))
+
+# Leiden ids sort numerically (2 before 10), not as text
+clusters <- str_sort(unique(as.character(cells[[CLUSTER_COL]])), numeric = TRUE)
+cells <- cells |>
+  mutate(cluster = factor(as.character(.data[[CLUSTER_COL]]), levels = clusters))
+cell_cluster <- cells$cluster[match(colnames(norm), cells$cell_ID)]
+
+markers <- read_csv(MARKERS_CSV, show_col_types = FALSE) |>
+  filter(gene %in% rownames(norm))
+markers_by_ct   <- split(markers$gene, markers$cell_type)
+markers_by_comp <- split(markers$gene, markers$compartment)
+canon_genes     <- unique(markers$gene)
+
+cat("run:", params$run_id, "\nlabels:", LABELS_OUT, "\n")
+cat(str_glue("Cells: {nrow(cells)}   Genes: {nrow(norm)}   {CLUSTER_COL}: {length(clusters)} clusters"), "\n")
+
+```
+
+```{r Figure sizes}
+
+n_clu   <- length(clusters)
+w_clu   <- fig_dim(n_clu, 0.45, 9, 20)
+h_ctpan <- fig_rows(max(lengths(markers_by_ct)), per = 0.30, pad = 1.3)
+h_gene  <- fig_rows(length(canon_genes), length(markers_by_comp))
+h_ct    <- fig_rows(length(markers_by_ct), per = 0.30)
+h_clu   <- fig_dim(n_clu, 0.35, 6)
+h_vol   <- fig_dim(ceiling(n_clu / 3), 2.6, 6)
+
+```
+
+# S1 · Overview & QC recap
+
+```{r Samples}
+
+count(cells, sample_id)
+
+```
+
+```{r Treatment by timepoint}
+
+if (all(c("treatment", "timepoint") %in% names(cells))) {
+  cells |>
+    count(treatment, timepoint) |>
+    pivot_wider(names_from = timepoint, values_from = n)
+}
+
+```
+
+```{r QC recap, fig.height=4}
+
+qc_cols <- intersect(c("nCount_RNA", "nFeature_RNA", "total_expr", "nr_feats"), names(cells))
+
+if (length(qc_cols)) {
+  cells |>
+    select(sample_id, all_of(qc_cols)) |>
+    pivot_longer(-sample_id) |>
+    ggplot(aes(sample_id, value, fill = sample_id)) +
+    geom_violin(scale = "width") +
+    facet_wrap(~name, scales = "free_y") +
+    theme_pixel() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+    labs(x = NULL, y = NULL, title = "Per-cell QC by sample")
+}
+
+```
+
+# S2 · Clustering overview across resolutions (Viz 1)
+
+```{r Cluster summary}
+
+cluster_summary <- file.path(RES_DIR, "tables", "03_clustering", "cluster_summary.csv")
+if (file.exists(cluster_summary)) read_csv(cluster_summary, show_col_types = FALSE)
+
+```
+
+```{r UMAP ladder, fig.width=7, fig.height=6, results='asis'}
+
+ladder <- str_sort(str_subset(names(cells), "^leiden_clus_res"), numeric = TRUE)
+
+walk(ladder, \(col) {
+  cat("\n\n###", col, "\n\n")
+  plotUMAP(g, dim_reduction_name = "umap", cell_color = col,
+           point_size = 0.8, show_plot = FALSE, return_plot = TRUE) |>
+    print()
+})
+
+```
+
+# S3 · Working resolution
+
+```{r Working resolution}
+
+count(cells, cluster)
+
+```
+
+# S4 · Per-cluster marker discovery (Viz 2)
+
+Reuses the pipeline's pre-computed scran markers when available, otherwise recomputes with the
+exact `bin/diagnostics.R` call.
+
+```{r Markers}
+
+de  <- read_diag("_de_all.csv")
+top <- read_diag("_de_top.csv")
+
+if (is.null(de)) {
+  message("No pre-computed diagnostics for ", CLUSTER_COL, " -- recomputing findMarkers_one_vs_all()")
+  de <- findMarkers_one_vs_all(g, method = "scran", expression_values = "normalized",
+                               cluster_column = CLUSTER_COL, min_feats = 10) |>
+    as_tibble()
+}
+de <- de |> mutate(cluster = factor(as.character(cluster), levels = clusters))
+
+if (is.null(top)) top <- de |> arrange(ranking) |> slice_head(n = params$top_n, by = cluster)
+
+es_col  <- str_subset(names(de), regex("logFC|LFC|logfoldchange|difference|summary", ignore_case = TRUE))[1]
+sig_col <- intersect(c("FDR", "padj", "p.value", "p_val", "pval"), names(de))[1]
+cat("effect-size column:", coalesce(es_col, "<none>"), " | significance column:", coalesce(sig_col, "<none>"), "\n")
+
+sel_genes <- de |>
+  filter(if (is.na(sig_col)) TRUE else .data[[sig_col]] < 0.05) |>
+  arrange(ranking) |>
+  slice_head(n = params$top_n, by = cluster) |>
+  pull(feats) |>
+  unique() |>
+  intersect(rownames(norm))
+h_hm <- fig_rows(length(sel_genes))
+
+head(top, 20)
+
+```
+
+# S5 · Effect-size heatmap of top markers (Viz 3)
+
+```{r Top marker heatmap, fig.width=w_clu, fig.height=h_hm}
+
+top_z <- cluster_stats(norm[sel_genes, , drop = FALSE], cell_cluster)$mean |> z_by_gene()
+gene_order <- rownames(top_z)[order(max.col(top_z, "first"))]
+
+top_z |>
+  to_long("z") |>
+  mutate(gene = factor(gene, levels = gene_order), cluster = factor(cluster, levels = clusters)) |>
+  ggplot(aes(cluster, gene, fill = z)) +
+  geom_tile() +
+  scale_diverging() +
+  theme_pixel() +
+  theme(axis.text.y = element_text(size = 8), axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(fill = "z(mean)", title = str_c("Top ", params$top_n, " markers per cluster"))
+
+```
+
+# S6 · Per-cluster volcano plots (Viz 4)
+
+```{r Volcano, fig.width=10, fig.height=h_vol}
+
+if (!is.na(es_col) && !is.na(sig_col)) {
+  volcano <- de |>
+    filter(is.finite(.data[[es_col]]), is.finite(.data[[sig_col]])) |>
+    mutate(x   = .data[[es_col]],
+           y   = -log10(pmax(.data[[sig_col]], 1e-300)),
+           hit = .data[[sig_col]] < 0.05 & abs(x) > 1)
+  labelled <- volcano |> arrange(ranking) |> slice_head(n = params$top_n, by = cluster)
+
+  gene_labels <- if (requireNamespace("ggrepel", quietly = TRUE)) {
+    ggrepel::geom_text_repel(data = labelled, aes(label = feats), size = 2, max.overlaps = 20)
+  } else {
+    geom_text(data = labelled, aes(label = feats), size = 2, check_overlap = TRUE)
+  }
+
+  ggplot(volcano, aes(x, y)) +
+    geom_point(aes(colour = hit), size = 0.4) +
+    geom_vline(xintercept = c(-1, 1), linetype = 2, linewidth = 0.3) +
+    gene_labels +
+    scale_colour_manual(values = c(`FALSE` = "grey70", `TRUE` = "#B2182B"), guide = "none") +
+    facet_wrap(~cluster, scales = "free", ncol = 3) +
+    theme_pixel() +
+    labs(x = es_col, y = "-log10(sig)")
+} else {
+  cat("DE table lacks effect-size and/or p-value columns -- showing top markers by rank instead.\n")
+  top |> select(cluster, feats, ranking) |> arrange(cluster, ranking) |> knitr::kable()
+}
+
+```
+
+# S7 · Canonical markers, one heatmap per cell type (Viz 5)
+
+One heatmap per cell type, grouped by compartment. **Fill = mean expression z-scored once per
+gene across all clusters** (so colour is comparable between panels; clipped at the 99th
+percentile), **number = % of cells expressing** (blank below 10%). A gene that marks several
+cell types appears under each. Use S13 to find which type a cluster resembles, then this to see
+which genes drove it.
+
+```{r Canonical marker heatmaps, fig.width=w_clu, fig.height=h_ctpan, results='asis'}
+
+canon <- cluster_stats(norm[canon_genes, , drop = FALSE], cell_cluster)
+
+canon_stats <- to_long(canon$mean, "mean_expr") |>
+  left_join(to_long(canon$pct, "pct"), by = join_by(gene, cluster)) |>
+  mutate(z = as.numeric(scale(mean_expr)), .by = gene) |>
+  mutate(z = if_else(is.finite(z), z, 0), cluster = factor(cluster, levels = clusters))
+lim <- quantile(abs(canon_stats$z), 0.99, names = FALSE)
+
+panels <- markers |>
+  distinct(compartment, cell_type, gene) |>
+  arrange(compartment, cell_type) |>
+  nest(genes = gene, .by = c(compartment, cell_type)) |>
+  mutate(new_compartment = compartment != lag(compartment, default = ""))
+
+pwalk(panels, \(compartment, cell_type, genes, new_compartment) {
+  if (new_compartment) cat("\n\n##", compartment, "\n")
+  cat("\n\n###", cell_type, "\n\n")
+  p <- canon_stats |>
+    filter(gene %in% genes$gene) |>
+    mutate(gene = factor(gene, levels = rev(genes$gene))) |>
+    ggplot(aes(cluster, gene, fill = z)) +
+    geom_tile(colour = "white", linewidth = 0.4) +
+    geom_text(aes(label = if_else(pct >= 0.10, as.character(round(pct * 100)), "")), size = 2.1) +
+    scale_diverging(limits = c(-lim, lim), oob = scales::squish) +
+    theme_pixel() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1), axis.text.y = element_text(size = 8)) +
+    labs(x = CLUSTER_COL, y = NULL, fill = "z(mean)",
+         title = str_glue("{cell_type}  ({compartment}, {nrow(genes)} markers)"))
+  print(p)
+})
+
+```
+
+# S8 · Feature plots by compartment (Viz 6)
+
+```{r Feature plots, fig.width=10, fig.height=8, results='asis'}
+
+iwalk(markers_by_comp, \(genes, compartment) {
+  cat("\n\n### ", compartment, "\n\n")
+  dimFeatPlot2D(g, feats = head(unique(genes), 12), dim_reduction_to_use = "umap",
+                dim_reduction_name = "umap", expression_values = "normalized",
+                cow_n_col = 4, point_size = 0.4, show_plot = FALSE, return_plot = TRUE) |>
+    print()
+})
+
+```
+
+# S9 · Violin plots per cluster (Viz 7)
+
+```{r Violins, fig.width=10, fig.height=6, results='asis'}
+
+iwalk(markers_by_comp, \(genes, compartment) {
+  cat("\n\n### ", compartment, "\n\n")
+  violinPlot(g, feats = head(unique(genes), 8), cluster_column = CLUSTER_COL,
+             expression_values = "normalized", show_plot = FALSE, return_plot = TRUE) |>
+    print()
+})
+
+```
+
+# S10 · Mean-marker heatmap (Viz 8)
+
+```{r Mean marker heatmap, fig.width=w_clu, fig.height=h_gene}
+
+plotMetaDataHeatmap(g, expression_values = "normalized", metadata_cols = CLUSTER_COL,
+                    selected_feats = canon_genes, show_plot = FALSE, return_plot = TRUE)
+
+```
+
+# S11 · Cluster composition (Viz 9)
+
+```{r Composition by sample, fig.height=5}
+
+cells |>
+  count(sample_id, cluster) |>
+  mutate(prop = n / sum(n), .by = sample_id) |>
+  ggplot(aes(sample_id, prop, fill = cluster)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent) +
+  theme_pixel() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "fraction of cells", title = "Cluster composition per sample")
+
+```
+
+```{r Composition by treatment, fig.height=5}
+
+if ("treatment" %in% names(cells)) {
+  cells |>
+    count(treatment, cluster) |>
+    mutate(prop = n / sum(n), .by = treatment) |>
+    ggplot(aes(treatment, prop, fill = cluster)) +
+    geom_col() +
+    scale_y_continuous(labels = scales::percent) +
+    theme_pixel() +
+    labs(x = NULL, y = "fraction of cells", title = "Cluster composition per treatment")
+}
+
+```
+
+# S12 · Leiden vs InSituType cross-check (Viz 11)
+
+```{r Leiden vs InSituType, fig.width=8, fig.height=h_clu}
+
+if ("insitutype_unsup" %in% names(cells)) {
+  cells |>
+    mutate(insitutype_unsup = as.character(insitutype_unsup),
+           insitutype_unsup = factor(insitutype_unsup, levels = str_sort(unique(insitutype_unsup), numeric = TRUE))) |>
+    count(cluster, insitutype_unsup) |>
+    mutate(prop = n / sum(n), .by = cluster) |>
+    ggplot(aes(insitutype_unsup, cluster, fill = prop)) +
+    geom_tile() +
+    geom_text(aes(label = round(prop, 2)), size = 2) +
+    scale_fill_viridis_c() +
+    theme_pixel() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    labs(x = "insitutype_unsup", y = CLUSTER_COL, title = "Row-normalized cluster overlap")
+} else {
+  cat("insitutype_unsup not present in metadata.\n")
+}
+
+```
+
+# S13 · Marker-score-guided labeling
+
+```{r Marker scores, fig.width=w_clu, fig.height=h_ct}
+
+# Same scoring as bin/diagnostics.R, so these match the pipeline's template CSV
+MIN_DETECTION   <- 0.05  # Rarer genes have a tiny sd, so z turns noise into specificity
+MIN_PANEL_GENES <- 3     # A 2-gene panel can still win a cluster on one loud gene
+MIN_SCORE       <- 0.5   # Below this the winner is only the least-negative, so no call
+
+detected  <- rowMeans(norm[canon_genes, , drop = FALSE] > 0)
+genes_use <- canon_genes[detected >= MIN_DETECTION]
+
+gene_z <- canon$mean[genes_use, , drop = FALSE] |> z_by_gene() |> to_long("z")
+
+scores <- markers |>
+  distinct(cell_type, gene) |>
+  inner_join(gene_z, by = join_by(gene), relationship = "many-to-many") |>
+  summarise(score = round(mean(z), 3), .by = c(cell_type, cluster)) |>
+  mutate(cluster = factor(cluster, levels = clusters))
+
+n_used <- markers |>
+  filter(gene %in% genes_use) |>
+  distinct(cell_type, gene) |>
+  count(cell_type, name = "n_genes_used")
+eligible <- n_used |> filter(n_genes_used >= MIN_PANEL_GENES) |> pull(cell_type)
+cat("cell types eligible for best_guess:", length(eligible), "of", length(markers_by_ct), "\n")
+
+ggplot(scores, aes(cluster, cell_type, fill = score)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  theme_pixel() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), axis.text.y = element_text(size = 9)) +
+  labs(title = "Canonical-marker enrichment per cluster (z-scored per gene)", fill = "z score")
+
+```
+
+```{r Label template}
+
+# Margin is the gap to the runner-up. Small margin + high best_score: two sibling types tie.
+# Small margin + best_score near 0: nothing is enriched, so best_guess is left blank.
+top_markers <- top |>
+  arrange(ranking) |>
+  summarise(top_markers = str_c(head(feats, 5), collapse = ";"), .by = cluster) |>
+  mutate(cluster_id = as.character(cluster), .keep = "unused")
+
+template <- scores |>
+  filter(cell_type %in% eligible) |>
+  arrange(cluster, desc(score)) |>
+  summarise(best_guess   = cell_type[1],
+            second_guess = cell_type[2],
+            best_score   = score[1],
+            margin       = round(score[1] - score[2], 3),
+            .by = cluster) |>
+  mutate(best_guess = if_else(best_score < MIN_SCORE, "", best_guess)) |>
+  left_join(n_used, by = join_by(best_guess == cell_type)) |>
+  left_join(count(cells, cluster, name = "n_cells"), by = join_by(cluster)) |>
+  mutate(cluster_id = as.character(cluster), .keep = "unused") |>
+  left_join(top_markers, by = join_by(cluster_id)) |>
+  mutate(label = "") |>
+  select(cluster_id, n_cells, best_guess, second_guess, best_score, margin,
+         n_genes_used, top_markers, label)
+
+no_call <- template |> filter(best_guess == "") |> pull(cluster_id)
+if (length(no_call)) cat("no panel match (best_guess blank) for cluster(s):", str_flatten_comma(no_call), "\n")
+
+suggested <- template |> select(cluster_id, best_guess) |> deframe()
+
+arrange(template, margin)
+
+```
+
+# S13b · Subcluster
+
+Re-clusters the cells of `subcluster` on their own PCA (all genes, no batch correction), so a
+sample that separates inside the cluster shows up as its own subcluster.
+Set `subcluster` to a cluster id (comma-separated for several) to run this section.
+
+```{r Subcluster, eval=SUB_OK}
+
+SUB_DIMS <- 1:30
+SUB_K    <- 20
+
+sub_ids   <- str_split_1(params$subcluster, ",") |> str_trim()
+sub_cells <- cells |>
+  filter(cluster %in% sub_ids) |>
+  pull(cell_ID)
+
+# An empty subset reaches runPCA as a request for <= 0 components, which errors obscurely
+if (!length(sub_cells))
+  stop("subcluster '", params$subcluster, "' matched no cells. Available: ",
+       str_flatten_comma(levels(cells$cluster)))
+
+g_sub <- subsetGiotto(g, cell_ids = sub_cells)
+g_sub <- runPCA(g_sub, feat_type = "rna", feats_to_use = NULL, ncp = max(SUB_DIMS), name = "pca_sub")
+g_sub <- createNearestNetwork(g_sub, feat_type = "rna", type = "sNN", dim_reduction_to_use = "pca",
+                              dim_reduction_name = "pca_sub", dimensions_to_use = SUB_DIMS, k = SUB_K,
+                              name = "NN.pca_sub")
+g_sub <- doLeidenCluster(g_sub, feat_type = "rna", nn_network_to_use = "sNN", network_name = "NN.pca_sub",
+                         resolution = params$subcluster_res, name = "subcluster", seed_number = 42)
+g_sub <- runUMAP(g_sub, feat_type = "rna", dim_reduction_to_use = "pca", dim_reduction_name = "pca_sub",
+                 dimensions_to_use = SUB_DIMS, name = "umap_sub", seed_number = 42)
+
+sub_meta <- getCellMetadata(g_sub, output = "data.table") |> as_tibble()
+cat(length(sub_cells), "cells ->", n_distinct(sub_meta$subcluster), "subclusters\n")
+
+```
+
+```{r Subcluster by sample, eval=SUB_OK}
+
+# Percent of each subcluster coming from each sample
+sub_meta |>
+  count(subcluster, sample_id) |>
+  mutate(pct = round(100 * n / sum(n)), .by = subcluster) |>
+  select(-n) |>
+  pivot_wider(names_from = sample_id, values_from = pct, values_fill = 0) |>
+  left_join(count(sub_meta, subcluster, name = "cells"), by = join_by(subcluster)) |>
+  arrange(subcluster)
+
+```
+
+```{r Subcluster UMAP, fig.width=8, fig.height=6, eval=SUB_OK}
+
+plotUMAP(g_sub, dim_reduction_name = "umap_sub", cell_color = "sample_id",
+         point_size = 0.3, show_plot = FALSE, return_plot = TRUE)
+
+plotUMAP(g_sub, dim_reduction_name = "umap_sub", cell_color = "subcluster", show_center_label = TRUE,
+         point_size = 0.3, show_plot = FALSE, return_plot = TRUE)
+
+```
+
+```{r Subcluster markers, eval=SUB_OK}
+
+findMarkers_one_vs_all(g_sub, method = "scran", expression_values = "normalized",
+                       cluster_column = "subcluster", min_feats = 10) |>
+  as_tibble() |>
+  arrange(ranking) |>
+  slice_head(n = 8, by = cluster) |>
+  summarise(top_markers = str_c(feats, collapse = ", "), .by = cluster)
+
+```
+
+Immune panels from `canonical_markers.csv` on the subcluster UMAP. Score = fraction of the
+panel's genes detected in each cell; `Immune` is every gene in the `immune_infiltrate` compartment.
+
+```{r Subcluster immune panels, fig.width=8, fig.height=6, eval=SUB_OK}
+
+IMMUNE_PANELS <- c("B_cell", "T_cell", "Treg")
+
+sub_norm <- getExpression(g_sub, values = "normalized", output = "matrix")
+
+immune_panels <- c(markers_by_ct[IMMUNE_PANELS],
+                   Immune = list(markers$gene[markers$compartment == "immune_infiltrate"])) |>
+  map(\(genes) intersect(unique(genes), rownames(sub_norm)))
+
+sub_umap <- getDimReduction(g_sub, reduction = "cells", reduction_method = "umap",
+                            name = "umap_sub", output = "matrix")
+
+sub_scores <- immune_panels |>
+  map(\(genes) colMeans(sub_norm[genes, , drop = FALSE] > 0)) |>
+  as_tibble() |>
+  mutate(cell_ID = colnames(sub_norm)) |>
+  right_join(tibble(cell_ID = rownames(sub_umap), UMAP1 = sub_umap[, 1], UMAP2 = sub_umap[, 2]),
+             by = join_by(cell_ID))
+
+walk(names(immune_panels), \(panel) {
+  p <- sub_scores |>
+    arrange(.data[[panel]]) |>
+    ggplot(aes(UMAP1, UMAP2, colour = .data[[panel]])) +
+    geom_point(size = 0.3) +
+    scale_colour_viridis_c() +
+    theme_pixel() +
+    labs(title = str_glue("{panel}: fraction of {length(immune_panels[[panel]])} markers detected"),
+         colour = NULL)
+  print(p)
+})
+
+```
+
+```{r Subcluster immune genes, fig.width=12, fig.height=12, eval=SUB_OK}
+
+dimFeatPlot2D(g_sub, feats = unique(unlist(immune_panels[IMMUNE_PANELS])),
+              expression_values = "normalized", dim_reduction_to_use = "umap",
+              dim_reduction_name = "umap_sub", order = TRUE, cow_n_col = 4, point_size = 0.3,
+              show_plot = FALSE, return_plot = TRUE)
+
+```
+
+# S13c · B/plasma lineage subcluster
+
+Follows Danaher et al., *Sci Transl Med* 2024 (PMID 39602512): pull the B and plasma cells out,
+subcluster them on their own, and filter to `b_min_counts` transcripts for the embedding.
+They classified with a CD20 immunofluorescence channel we do not have, so membership here is a
+multi-gene rule instead -- MS4A1 alone tops out at 3 transcripts in this dataset.
+
+```{r B lineage cells, eval=params$b_lineage}
+
+B_GENES <- c("MS4A1", "CD79A", "CD79B", "CD19", "BANK1", "PAX5", "CR2", "CD22",
+             "TCL1A", "VPREB3", "MZB1", "JCHAIN", "XBP1", "IRF4", "TNFRSF17",
+             "CD27", "CD38", "IGHM", "IGHD", "IGKC", "IGHG1/2")
+
+raw_mat  <- getExpression(g, values = "raw", output = "matrix")
+b_use    <- intersect(B_GENES, rownames(raw_mat))
+b_hits   <- colSums(raw_mat[b_use, , drop = FALSE] > 0)
+n_counts <- colSums(raw_mat)
+
+b_cells <- cells |>
+  mutate(b_genes = b_hits[cell_ID], total_counts = n_counts[cell_ID]) |>
+  filter(b_genes >= params$b_min_genes, total_counts > params$b_min_counts)
+
+cat(length(b_use), "of", length(B_GENES), "B-lineage genes on the panel:",
+    str_flatten_comma(b_use), "\n")
+cat(nrow(b_cells), "cells with >=", params$b_min_genes, "B genes and >",
+    params$b_min_counts, "counts\n\n")
+
+count(b_cells, cluster, name = "cells")
+
+```
+
+```{r B lineage subcluster, eval=params$b_lineage}
+
+B_DIMS <- 1:20
+
+g_b <- subsetGiotto(g, cell_ids = b_cells$cell_ID)
+g_b <- runPCA(g_b, feat_type = "rna", feats_to_use = NULL, ncp = max(B_DIMS), name = "pca_b")
+g_b <- createNearestNetwork(g_b, feat_type = "rna", type = "sNN", dim_reduction_to_use = "pca",
+                            dim_reduction_name = "pca_b", dimensions_to_use = B_DIMS, k = 15,
+                            name = "NN.pca_b")
+g_b <- doLeidenCluster(g_b, feat_type = "rna", nn_network_to_use = "sNN", network_name = "NN.pca_b",
+                       resolution = params$b_res, name = "b_sub", seed_number = 42)
+g_b <- runUMAP(g_b, feat_type = "rna", dim_reduction_to_use = "pca", dim_reduction_name = "pca_b",
+               dimensions_to_use = B_DIMS, name = "umap_b", seed_number = 42)
+
+b_meta <- getCellMetadata(g_b, output = "data.table") |> as_tibble()
+cat(nrow(b_meta), "cells ->", n_distinct(b_meta$b_sub), "subclusters\n")
+
+```
+
+Composition by treatment and timepoint. Percentages are of each sample's own cells, which is what makes them
+comparable -- the samples differ several-fold in cell count and in depth.
+
+```{r B lineage composition, eval=params$b_lineage}
+
+b_meta |>
+  count(sample_id, treatment, timepoint, name = "b_cells") |>
+  left_join(count(cells, sample_id, name = "total"), by = join_by(sample_id)) |>
+  mutate(pct_of_sample = round(100 * b_cells / total, 3)) |>
+  arrange(treatment, timepoint)
+
+```
+
+```{r B lineage by subcluster, eval=params$b_lineage}
+
+b_meta |>
+  count(b_sub, sample_id) |>
+  mutate(pct = round(100 * n / sum(n)), .by = b_sub) |>
+  select(-n) |>
+  pivot_wider(names_from = sample_id, values_from = pct, values_fill = 0) |>
+  left_join(count(b_meta, b_sub, name = "cells"), by = join_by(b_sub)) |>
+  arrange(b_sub)
+
+```
+
+IF intensity per subcluster. These are the channels InSituType already cohorts on; CD45 is the
+leukocyte readout that does not depend on the RNA panel at all.
+
+```{r B lineage IF, eval=params$b_lineage}
+
+if_cols <- str_subset(names(b_meta), "^(Mean|Max)\\.")
+
+if (length(if_cols)) {
+  b_meta |>
+    summarise(across(all_of(if_cols), \(v) round(median(v, na.rm = TRUE), 1)),
+              cells = n(), .by = b_sub) |>
+    arrange(b_sub)
+} else {
+  cat("no IF/morphology columns on the object -- check names(pDataDT(g))\n")
+}
+
+```
+
+```{r B lineage UMAP, fig.width=8, fig.height=6, eval=params$b_lineage}
+
+plotUMAP(g_b, dim_reduction_name = "umap_b", cell_color = "b_sub", show_center_label = TRUE,
+         point_size = 1.2, show_plot = FALSE, return_plot = TRUE)
+
+plotUMAP(g_b, dim_reduction_name = "umap_b", cell_color = "treatment",
+         point_size = 1.2, show_plot = FALSE, return_plot = TRUE)
+
+```
+
+```{r B lineage markers, eval=params$b_lineage}
+
+findMarkers_one_vs_all(g_b, method = "scran", expression_values = "normalized",
+                       cluster_column = "b_sub", min_feats = 5) |>
+  as_tibble() |>
+  arrange(ranking) |>
+  slice_head(n = 10, by = cluster) |>
+  summarise(top_markers = str_c(feats, collapse = ", "), .by = cluster)
+
+```
+
+```{r B lineage genes, fig.width=12, fig.height=10, eval=params$b_lineage}
+
+dimFeatPlot2D(g_b, feats = b_use, expression_values = "normalized",
+              dim_reduction_to_use = "umap", dim_reduction_name = "umap_b", order = TRUE,
+              cow_n_col = 4, point_size = 0.8, show_plot = FALSE, return_plot = TRUE)
+
+```
+
+# S14 · Draft annotated UMAP (Viz 10)
+
+```{r Draft UMAP, fig.width=8, fig.height=6}
+
+g <- annotateGiotto(g, annotation_vector = suggested, cluster_column = CLUSTER_COL,
+                    name = "cell_type_draft")
+
+plotUMAP(g, dim_reduction_name = "umap", cell_color = "cell_type_draft",
+         show_center_label = TRUE, point_size = 0.3, show_plot = FALSE, return_plot = TRUE)
+
+```
+
+# S15 · Write the `cluster_id,label` CSV
+
+`label_map` is seeded from `best_guess` so the notebook knits to a draft; **replace it with your
+curated labels after reviewing S5-S14.** Copy the scaffold below to get an editable literal.
+Once the CSV exists it is kept as-is: set `overwrite_labels: true` to write your edits.
+
+```{r Label scaffold, class.source='fold-show'}
+
+cat("label_map <- c(\n",
+    str_flatten(str_glue('    "{names(suggested)}" = "{suggested}"'), ",\n"),
+    "\n)\n", sep = "")
+
+```
+
+```{r Label map, class.source='fold-show'}
+
+# EDIT: replace the seed below with your reviewed labels (paste the scaffold above), e.g.
+# label_map <- c("1" = "PT", "2" = "CNT_CD", "3.1" = "Fibroblast", "3.2" = "Macrophage")
+label_map <- suggested
+
+```
+
+```{r Write labels}
+
+if (file.exists(LABELS_OUT) && !params$overwrite_labels) {
+  message("labels file exists; keeping it (set overwrite_labels = TRUE to replace). Reading it back.")
+  labels <- read_csv(LABELS_OUT, col_types = cols(.default = col_character()))
+} else {
+  labels <- enframe(label_map, name = "cluster_id", value = "label")
+  dir.create(dirname(LABELS_OUT), recursive = TRUE, showWarnings = FALSE)
+  write_csv(labels, LABELS_OUT, na = "")
+  message("Wrote ", LABELS_OUT)
+}
+
+labels
+
+```
+
+# S16 · Validate against the annotate contract
+
+Mirrors `bin/apply_labels.R` -- every distinct value of `cluster_basis` must have a non-blank label.
+
+```{r Validate, class.source='fold-show'}
+
+labelled_ids <- labels |> filter(!is.na(label), label != "") |> pull(cluster_id)
+unlabelled   <- setdiff(clusters, labelled_ids)
+
+if (length(unlabelled)) {
+  cat("[!] UNLABELED clusters:", str_flatten_comma(unlabelled), "\n")
+  if (params$error_on_incomplete) stop("Incomplete labels for ", CLUSTER_COL)
+} else {
+  cat("[OK] All", length(clusters), "clusters in", CLUSTER_COL, "are labeled.\n")
+}
+
+cat("\nLaunch the annotate stage with:\n")
+cat(str_glue("  cd {PIPE_DIR} && ./run.sh {params$run_id} --stage annotate ",
+             "--labels {LABELS_OUT} --cluster_basis {CLUSTER_COL} -profile server"), "\n")
+
+```
+
+# S17 · Review figures
+
+Every gene in `REVIEW_PANELS` is plotted, unlike S7-S9 which cap each panel. Dot size is the
+percentage of cells detecting the gene, fill is mean expression z-scored per gene across
+clusters. Genes absent from the CosMx panel are listed rather than silently dropped.
+
+```{r Review panels}
+
+REVIEW_PANELS <- list(
+  Plasma      = c("MZB1", "JCHAIN", "IGKC", "IGHG1/2", "XBP1", "TNFRSF17", "IRF4"),
+  B_cell      = c("MS4A1", "CD79A", "CD79B", "CD19", "BANK1", "CD22", "TCL1A", "VPREB3"),
+  T_NK        = c("CD3D", "CD3E", "CD2", "IL7R", "TRAC", "CD8A", "NKG7", "GNLY", "KLRD1"),
+  Myeloid     = c("CD68", "CD14", "C1QA", "C1QB", "LYZ", "TYROBP", "FCER1G", "ITGAM"),
+  Leukocyte   = c("PTPRC", "CD52", "LAPTM5", "CORO1A", "CXCR4"),
+  PT          = c("LRP2", "CUBN", "ALDOB", "GPX3", "GATM", "SLC34A1", "ASS1"),
+  PT_injured  = c("VCAM1", "HAVCR1", "CLU", "SPP1", "CRYAB"),
+  TAL_DCT     = c("UMOD", "SLC12A1", "SLC12A3", "EGF", "KNG1"),
+  CNT_CD      = c("CALB1", "AQP2", "AQP3", "SCNN1G", "SLC4A1", "SLC26A4", "DEFB1"),
+  Podocyte    = c("PODXL", "NPHS1", "NPHS2", "PLA2R1", "VEGFA"),
+  Endothelial = c("PECAM1", "EMCN", "VWF", "FLT1", "KLF2", "EPAS1"),
+  Stromal     = c("DCN", "LUM", "COL1A1", "C7", "MGP", "SELENOP"),
+  Mural       = c("ACTA2", "MYH11", "TAGLN", "RGS5", "PDGFRB", "REN")
+)
+
+review <- tibble(panel = names(REVIEW_PANELS), gene = REVIEW_PANELS) |>
+  unnest(gene) |>
+  mutate(panel = fct_inorder(panel))
+
+absent <- review |> filter(!gene %in% rownames(norm))
+if (nrow(absent)) {
+  cat("not on the CosMx panel:", str_flatten_comma(absent$gene), "\n")
+}
+review <- review |> filter(gene %in% rownames(norm))
+h_rev  <- max(6, 0.22 * nrow(review) + 1.5)
+
+cat(nrow(review), "genes across", n_distinct(review$panel), "panels\n")
+
+```
+
+```{r Review dotplot, fig.width=w_clu, fig.height=h_rev}
+
+rev_stats <- cluster_stats(norm[review$gene, , drop = FALSE], cell_cluster)
+
+to_long(z_by_gene(rev_stats$mean), "z") |>
+  left_join(to_long(rev_stats$pct, "pct"), by = join_by(gene, cluster)) |>
+  left_join(review, by = join_by(gene), relationship = "many-to-many") |>
+  mutate(gene = fct_rev(fct_inorder(gene)), cluster = factor(cluster, levels = clusters)) |>
+  ggplot(aes(cluster, gene)) +
+  geom_point(aes(size = pct, fill = z), shape = 21, colour = "grey40", stroke = 0.2) +
+  scale_size_area(max_size = 5, labels = scales::percent) +
+  scale_diverging() +
+  facet_grid(panel ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  theme_pixel() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_text(size = 7),
+        strip.text.y.left = element_text(angle = 0, size = 8),
+        strip.placement = "outside") +
+  labs(x = CLUSTER_COL, y = NULL, size = "% detected", fill = "z(mean)")
+
+```
+
+## Depth per cluster
+
+A cluster whose cells carry fewer transcripts cannot be typed as confidently as the rest, so
+the depth distribution has to be shown before any claim about what does or does not resolve.
+
+```{r Depth per cluster, fig.width=w_clu, fig.height=5}
+
+depth_col <- intersect(c("total_expr", "nCount_RNA"), names(cells))[1]
+med_all   <- median(cells[[depth_col]])
+
+cells |>
+  mutate(lab = median(.data[[depth_col]]), .by = cluster) |>
+  ggplot(aes(cluster, .data[[depth_col]])) +
+  geom_violin(aes(fill = lab < med_all), scale = "width", linewidth = 0.2) +
+  geom_boxplot(width = 0.14, outlier.shape = NA, fill = "white", linewidth = 0.3) +
+  geom_hline(yintercept = med_all, linetype = 2, colour = "grey40") +
+  scale_y_log10(labels = scales::comma) +
+  scale_fill_manual(values = c(`FALSE` = "#9EC9BE", `TRUE` = "#B2182B"), guide = "none") +
+  theme_pixel() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = CLUSTER_COL, y = "transcripts per cell",
+       title = "Transcripts per cell by cluster",
+       subtitle = str_glue("red = median below the dataset median ({med_all}); dashed = that median"))
+
+```
+
+```{r Depth table}
+
+cells |>
+  summarise(n = n(),
+            median = median(.data[[depth_col]]),
+            q25 = quantile(.data[[depth_col]], 0.25),
+            q75 = quantile(.data[[depth_col]], 0.75),
+            .by = cluster) |>
+  arrange(median)
+
+```
+
+## Is there a B-cell compartment?
+
+MS4A1 is CD20. If its positive cells were B cells they would also carry CD79A/CD19/BANK1 well
+above the background rate. Detection tracks depth, so the comparison is made within deciles of
+total counts -- a naive fold would report depth as biology.
+
+```{r B cell evidence}
+
+B_OTHER <- c("CD79A", "CD19", "BANK1", "CD79B", "CD22")
+
+raw_mat <- getExpression(g, values = "raw", output = "matrix")
+b_other <- intersect(B_OTHER, rownames(raw_mat))
+
+ev <- tibble(cell_ID = colnames(raw_mat),
+             counts  = colSums(raw_mat),
+             genes   = colSums(raw_mat > 0),
+             ms4a1   = as.numeric(raw_mat["MS4A1", ]),
+             other_b = colSums(raw_mat[b_other, , drop = FALSE] > 0)) |>
+  mutate(decile = ntile(counts, 10))
+
+cat("MS4A1 raw counts across all cells:\n")
+print(table(ev$ms4a1))
+
+ev |>
+  mutate(group = case_when(ms4a1 >= 2 ~ "MS4A1 >= 2",
+                           ms4a1 == 1 ~ "MS4A1 = 1",
+                           .default   = "MS4A1 = 0")) |>
+  summarise(cells = n(), median_counts = median(counts), median_genes = median(genes),
+            pct_other_B = round(100 * mean(other_b > 0), 1), .by = group) |>
+  arrange(desc(cells))
+
+```
+
+MS4A1 against every other gene on the panel. Detection rate alone is not the argument: the
+comparison that matters is **peak count in a single cell**, because a real population gives a
+loud signal in few cells while ambient contamination gives a whisper spread across many.
+
+```{r Gene ranking}
+
+# rowMax without densifying: a 6K panel over ~150k cells is ~7 GB dense
+row_max <- function(m) {
+  s <- as(m, "TsparseMatrix")
+  v <- numeric(nrow(m))
+  o <- tapply(s@x, s@i + 1L, max)
+  v[as.integer(names(o))] <- o
+  v
+}
+
+gene_stats <- tibble(gene = rownames(raw_mat),
+                     pct_cells = 100 * rowSums(raw_mat > 0) / ncol(raw_mat),
+                     mean_per_cell = rowSums(raw_mat) / ncol(raw_mat),
+                     max_in_a_cell = row_max(raw_mat)) |>
+  mutate(rank_detection = rank(-pct_cells))
+
+REFS <- c("MS4A1", "CD79A", "CD79B", "CD19", "BANK1", "CD22",
+          "MZB1", "JCHAIN", "IGKC", "TNFRSF17",
+          "PTPRC", "CD68", "CD3E", "ALDOB", "PODXL", "ACTA2", "B2M")
+
+gene_stats |>
+  filter(gene %in% REFS) |>
+  arrange(desc(pct_cells)) |>
+  mutate(across(c(pct_cells, mean_per_cell), \(v) round(v, 3)),
+         rank_detection = str_c(rank_detection, " of ", nrow(gene_stats)))
+
+```
+
+```{r Gene ranking summary}
+
+gene_stats |>
+  summarise(across(c(pct_cells, max_in_a_cell),
+                   list(median = \(v) round(median(v), 2),
+                        p90    = \(v) round(quantile(v, 0.9), 2),
+                        p10    = \(v) round(quantile(v, 0.1), 2))))
+
+```
+
+```{r B cell depth matched}
+
+# Expected co-detection = the MS4A1-negative rate in the same depth decile
+ev |>
+  summarise(pos = sum(ms4a1 > 0),
+            obs = sum(ms4a1 > 0 & other_b > 0),
+            bg  = mean(other_b[ms4a1 == 0] > 0), .by = decile) |>
+  summarise(observed = sum(obs), expected = round(sum(pos * bg), 1)) |>
+  mutate(fold = round(observed / expected, 2))
+
+```
+
+```{r B cell depth plot, fig.width=9, fig.height=4}
+
+ev |>
+  mutate(group = if_else(ms4a1 > 0, "MS4A1+", "MS4A1-")) |>
+  ggplot(aes(group, counts, fill = group)) +
+  geom_violin(scale = "width") +
+  geom_boxplot(width = 0.12, outlier.shape = NA, fill = "white") +
+  scale_y_log10(labels = scales::comma) +
+  theme_pixel() +
+  theme(legend.position = "none") +
+  labs(x = NULL, y = "total counts per cell",
+       title = "MS4A1 is detected in deep cells, not in B cells")
+
+```
+
+# S18 · Immunofluorescence check
+
+CD45 intensity is measured from the image, so it is independent of transcript depth -- the one
+readout in this dataset that the depth confound cannot reach. `if_control` names a cluster that
+must be CD45-negative; its 95th percentile sets the null, so the null column reads ~5%.
+Left blank it defaults to the largest cluster.
+
+```{r IF channels}
+
+IF_COLS <- str_subset(names(cells), "^(Mean|Max)\\.")
+
+if (!length(IF_COLS)) {
+  cat("no IF columns on this object -- check names(pDataDT(g))\n")
+} else {
+  cat(length(IF_COLS), "channels:", str_flatten_comma(IF_COLS), "\n")
+}
+
+CTRL <- if (nzchar(params$if_control)) params$if_control else
+  count(cells, cluster) |> slice_max(n, n = 1) |> pull(cluster) |> as.character()
+cat("CD45-negative control cluster:", CTRL, "\n")
+
+```
+
+```{r IF by cluster, eval=length(IF_COLS) > 0}
+
+null_95 <- cells |> filter(cluster == CTRL) |> pull(Mean.CD45) |> quantile(0.95, na.rm = TRUE)
+
+cells |>
+  summarise(n = n(),
+            CD45  = round(median(Mean.CD45, na.rm = TRUE)),
+            CD68  = round(median(Mean.CD68, na.rm = TRUE)),
+            PanCK = round(median(Mean.PanCK, na.rm = TRUE)),
+            pct_CD45_above_null = round(100 * mean(Mean.CD45 > null_95, na.rm = TRUE), 1),
+            .by = cluster) |>
+  arrange(desc(pct_CD45_above_null))
+
+```
+
+Intensity is not comparable between slides. When treatment is confounded with slide, any
+treatment-level claim has to be made within a slide.
+
+```{r IF by slide, eval=length(IF_COLS) > 0}
+
+cells |>
+  summarise(CD45 = round(median(Mean.CD45, na.rm = TRUE)), n = n(),
+            .by = c(cluster, slide_id)) |>
+  pivot_wider(names_from = slide_id, values_from = c(CD45, n), values_fill = 0) |>
+  arrange(cluster)
+
+```
+
+```{r IF plot, fig.width=w_clu, fig.height=6, eval=length(IF_COLS) > 0}
+
+ord <- cells |>
+  summarise(m = median(Mean.CD45, na.rm = TRUE), .by = cluster) |>
+  arrange(desc(m)) |>
+  pull(cluster)
+
+cells |>
+  mutate(cluster = factor(as.character(cluster), levels = as.character(ord))) |>
+  ggplot(aes(cluster, Mean.CD45)) +
+  geom_violin(aes(fill = cluster), scale = "width", linewidth = 0.2) +
+  geom_boxplot(width = 0.12, outlier.shape = NA, fill = "white", linewidth = 0.3) +
+  geom_hline(yintercept = null_95, linetype = 2, colour = "#B2182B") +
+  scale_y_log10(labels = scales::comma) +
+  theme_pixel() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position = "none") +
+  labs(x = CLUSTER_COL, y = "Mean CD45 intensity",
+       title = str_glue("CD45 protein per cluster (dashed = 95th pct of cluster {CTRL})"))
+
+```
+
+# S16c · Compare the annotations
+
+Puts the manual labels, the unsupervised InSituType clusters and each supervised pass side by
+side. Columns in `compare_cols` that are not on the object are skipped.
+
+```{r Comparison setup}
+
+compare_cols <- str_trim(str_split_1(params$compare_cols, ","))
+skipped      <- setdiff(compare_cols, names(cells))
+compare_cols <- intersect(compare_cols, names(cells))
+if (length(skipped)) cat("not on the object, skipped:", str_flatten_comma(skipped), "\n")
+
+# Manual labels are only in the CSV until --stage annotate runs
+if (file.exists(LABELS_OUT)) {
+  manual <- read_csv(LABELS_OUT, col_types = cols(.default = col_character())) |> deframe()
+  cells <- cells |> mutate(manual = unname(manual[as.character(cluster)]))
+  compare_cols <- c("manual", compare_cols)
+} else {
+  cat("no labels CSV at", LABELS_OUT, "-- manual column skipped\n")
+}
+cat("comparing:", str_flatten_comma(compare_cols), "\n")
+
+```
+
+## Composition
+
+```{r Comparison composition, results='asis'}
+
+walk(compare_cols, \(k) {
+  d <- cells |>
+    filter(!is.na(.data[[k]])) |>
+    count(across(all_of(k)), sort = TRUE) |>
+    mutate(pct = round(100 * n / sum(n), 1))
+  cat(str_glue("\n\n**{k}** -- {nrow(d)} labels\n\n"))
+  print(knitr::kable(head(d, 25)))
+})
+
+```
+
+## Agreement
+
+```{r Comparison agreement}
+
+# Adjusted Rand index: 0 = chance, 1 = identical partitions
+ari <- function(a, b) {
+  ok <- !is.na(a) & !is.na(b)
+  t  <- table(a[ok], b[ok])
+  s  <- function(x) sum(choose(x, 2))
+  e  <- s(rowSums(t)) * s(colSums(t)) / choose(sum(t), 2)
+  m  <- (s(rowSums(t)) + s(colSums(t))) / 2
+  round((s(t) - e) / (m - e), 3)
+}
+
+pairs <- combn(compare_cols, 2, simplify = FALSE)
+
+pairs |>
+  map(\(p) tibble(a = p[1], b = p[2],
+                  ARI = ari(cells[[p[1]]], cells[[p[2]]]),
+                  n_shared = sum(!is.na(cells[[p[1]]]) & !is.na(cells[[p[2]]])))) |>
+  list_rbind() |>
+  knitr::kable()
+
+```
+
+## Cross-tabs
+
+```{r Comparison cross-tabs, fig.width=11, fig.height=8}
+
+walk(pairs, \(p) {
+  p_tab <- cells |>
+    filter(!is.na(.data[[p[1]]]), !is.na(.data[[p[2]]])) |>
+    count(a = .data[[p[1]]], b = .data[[p[2]]]) |>
+    mutate(frac = n / sum(n), .by = a)
+  p_plot <- ggplot(p_tab, aes(b, a, fill = frac)) +
+    geom_tile() +
+    scale_fill_gradient(low = "white", high = "#B2182B", limits = c(0, 1)) +
+    theme_pixel() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = str_c(p[1], " (rows) vs ", p[2], " (cols)"), x = p[2], y = p[1], fill = "row frac")
+  print(p_plot)
+})
+
+```
+
+## Merge table
+
+```{r Merge table}
+
+# One row per observed label combination, largest first; fill merged_label to build a labels CSV
+merge_table <- cells |>
+  count(across(all_of(compare_cols)), sort = TRUE) |>
+  mutate(pct = round(100 * n / sum(n), 2), merged_label = "")
+
+merge_out <- file.path(dirname(LABELS_OUT), "annotation_comparison.csv")
+write_csv(merge_table, merge_out, na = "")
+cat("wrote", merge_out, "--", nrow(merge_table), "combinations\n\n")
+
+knitr::kable(head(merge_table, 40))
+
+```

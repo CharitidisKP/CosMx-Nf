@@ -1,0 +1,78 @@
+name: cosmx_r
+
+channels:
+  - conda-forge
+
+dependencies:
+  - r-base=4.5
+
+  # toolchain for compiling CRAN/Bioconductor sources
+  - compilers
+  - make
+  - pkg-config
+
+  # system libraries the geo/HDF5-backed packages link against
+  - gdal
+  - geos
+  - proj
+  - hdf5
+  - libcurl
+  - openssl
+  - libxml2
+  - fftw
+  - gsl
+  - libgit2
+
+  # graphics devices - ggplot2/Giotto png output
+  - cairo
+  - pango
+  - libpng
+  - libjpeg-turbo
+  - libtiff
+  - fontconfig
+  - freetype
+
+  # from conda: the two that are genuinely painful to build from source
+  - r-terra
+  - r-sf
+
+  # bootstrap only - everything else comes from BiocManager/remotes under renv
+  - r-biocmanager
+  - r-remotes
+  - r-renv
+
+  # Giotto's leiden goes through reticulate
+  - python=3.11
+  - leidenalg
+  - python-igraph
+  # required by Giotto's reticulate python
+  - pandas
+  - networkx
+  - scikit-learn
+  - python-louvain
+
+  # Three post-create steps, all required:
+  #
+  # 1. Positron launches the R binary directly and never runs `conda activate`, so the env's
+  #    activation scripts never fire. Put the variables where R reads them unconditionally:
+  #      F=$CONDA_PREFIX/lib/R/etc/Renviron.site
+  #      echo "RETICULATE_PYTHON=$CONDA_PREFIX/bin/python" >> $F
+  #      echo "PROJ_DATA=$CONDA_PREFIX/share/proj"         >> $F
+  #      echo "PROJ_LIB=$CONDA_PREFIX/share/proj"          >> $F
+  #      echo "GDAL_DATA=$CONDA_PREFIX/share/gdal"         >> $F
+  #    Renviron.site lives inside the prefix, so an env rebuild loses it.
+  #
+  # 2. positron.r.customBinaries, REMOTE settings scope, set to `readlink -f "$(which R)"`.
+  #    Absolute path only -- no ~ and no ${HOME}, they are not expanded.
+  #
+  # 3. BiocManager::install(c("scran","scuttle","SingleCellExperiment"), update=FALSE, ask=FALSE)
+  #    remotes::install_github("drieslab/Giotto")
+  #    NEVER accept an offer to update packages -- `n` to "Update all/some/none?", `3`/None to
+  #    the numbered prompt from install_github. Rebuilding a conda-installed package from CRAN
+  #    source loses the RPATH to conda's libraries; it silently destroyed terra once.
+  #
+  # r-base is pinned to 4.5 to match the SIF (R 4.5.1, Giotto 4.2.2, scran 1.36.0); R keeps
+  # package ABI compatibility within a minor version. Bioconductor is NOT taken from bioconda,
+  # whose packages pin r-base and would let a dependency choose the interpreter version.
+  # ~/Rlibs_giotto_base cannot be reused from here: those .so are built against the container's
+  # glibc 2.38 and will not load on the host.

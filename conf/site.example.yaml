@@ -1,0 +1,28 @@
+# Per-machine settings. Copy to conf/site.yaml (gitignored); run.sh passes it as -params-file.
+# Without run.sh: nextflow run main.nf -profile server -params-file conf/site.yaml
+# A -params-file is used rather than -c because params set in a -c file do not reach the
+# profile settings built from them (process.container, apptainer.runOptions).
+
+# Sample sheet with the real data paths, kept out of git
+input: assets/private/samplesheet.csv
+
+# Apptainer image with Giotto and the R packages listed in the README
+sif: /path/to/images/cosmx-giotto.sif
+
+# Python with leidenalg and igraph, as seen from inside the image (Giotto calls it through reticulate)
+container_python: /path/to/envs/giotto/bin/python3
+python_path: /path/to/envs/giotto/bin/python3
+
+# Extra R libraries bound into the image. Leave these out when the image carries every package
+r_libs_user: /path/to/Rlibs
+r_libs: /path/to/Rlibs
+
+# Host folders the tasks read or write, comma-separated; each entry is passed to -B as is
+bind: /path/to/data,/path/to/Runs
+
+# Reference profile matrices for the supervised passes, <name>.csv or .rds per profile.
+# Defaults to assets/profiles/. Set supervised_profiles: "" to skip the supervised passes
+profile_dir: /path/to/profiles
+
+# NicheNet ligand-target model files. The NicheNet step is skipped when this is unset
+nichenet_model_dir: /path/to/nichenet
