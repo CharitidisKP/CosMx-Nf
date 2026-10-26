@@ -85,9 +85,17 @@ keep <- setdiff(names(pd), c(drop, names(cells)))
 # Cluster ids arrive numeric but are categories; everything else keeps its natural type
 catrx <- "^leiden_clus_res|^sub_res|^insitutype|^ht_|^cell_type|^monaco_|^fov$|^list_ID$"
 numrx <- "_UMAP[0-9]$|_score$"
-for (nm in keep) cells[[nm]] <- if (grepl(numrx, nm)) as.numeric(pd[[nm]])
-  else if (!is.numeric(pd[[nm]]) || grepl(catrx, nm)) as.character(pd[[nm]])
-  else as.numeric(pd[[nm]])
+# Braced: Rscript reads this line by line, and an `else` opening a line at top level
+# ends the script with "unexpected 'else'"
+for (nm in keep) {
+  cells[[nm]] <- if (grepl(numrx, nm)) {
+    as.numeric(pd[[nm]])
+  } else if (!is.numeric(pd[[nm]]) || grepl(catrx, nm)) {
+    as.character(pd[[nm]])
+  } else {
+    as.numeric(pd[[nm]])
+  }
+}
 cat("dropped as fit internals:", if (length(drop)) paste(drop, collapse = ", ") else "(none)", "\n")
 # Total counts per cell. The explorer needs it to build a DEPTH-MATCHED independence
 # baseline for the gene-combination panel: detection tracks depth, so a naive baseline
