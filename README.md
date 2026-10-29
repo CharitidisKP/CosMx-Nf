@@ -94,6 +94,9 @@ LABELS=../Runs/my_run/results/tables/06_annotation/labels/cluster_labels.sub_res
 ./run.sh my_run -profile server --stage de --labels $LABELS
 ```
 
+- **`--labels`** is needed by `annotate`, which applies it, and by `de`, which takes the cell
+  types to test from its `label` column (one smiDE job per sample and cell type). Setting
+  `smide_celltypes` overrides that list, but `de` still asks for the file.
 - **`-resume`** works on any stage. Tasks use `cache = 'lenient'` (path and size, not timestamps), so a
   shared file system with unreliable timestamps does not invalidate the cache.
 - **`--solo <id,id|all>`** also takes the named samples through discovery on their own, without
