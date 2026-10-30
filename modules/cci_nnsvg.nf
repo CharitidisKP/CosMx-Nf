@@ -14,6 +14,7 @@ process CCI_NNSVG {
     def genes_arg = params.nnsvg_use_sparkx ? "--svg_genes '${svg_genes}'" : ""
     """
     cci_nnsvg.R --input '${obj}' ${genes_arg} --max_genes ${params.nnsvg_max_genes} \\
-        --cores ${task.cpus} --outdir . --python '${params.python_path}'
+        --order ${params.nnsvg_order} --cores ${task.cpus} --outdir . \\
+        --python '${params.python_path}'
     """
 }

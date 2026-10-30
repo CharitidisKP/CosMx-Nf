@@ -58,7 +58,63 @@ g <- importCosMx(
   split_keyword = list("Negative|SystemControl|FalseCode")
 )
 
-## Positions come from the polygons. A cell whose polygon yields none cannot be kept ##
+## Positions from each cell's own outline, matched by cell ID. Giotto's own centroids are
+## paired with IDs by row, and terra::centroids() drops the centre of a one-point outline,
+## so every cell after one would carry the next cell's centre ##
+centres_by_id <- function(sv) {
+  g <- as.data.table(terra::geom(sv))[hole == 0]
+  g[,
+    `:=`(
+      x2 = data.table::shift(x, -1L, fill = x[1L]),
+      y2 = data.table::shift(y, -1L, fill = y[1L])
+    ),
+    by = .(geom, part)
+  ]
+  g[, cr := x * y2 - x2 * y]
+  ct <- g[,
+    .(
+      a = sum(cr) / 2,
+      cx = sum((x + x2) * cr),
+      cy = sum((y + y2) * cr),
+      mx = mean(x),
+      my = mean(y)
+    ),
+    by = .(geom, part)
+  ]
+  ## Largest part; an outline without area falls back to the mean of its vertices ##
+  ct <- ct[order(geom, -abs(a))][, .SD[1L], by = geom]
+  ct[,
+    `:=`(
+      sdimx = fifelse(abs(a) > 1e-9, cx / (6 * a), mx),
+      sdimy = fifelse(abs(a) > 1e-9, cy / (6 * a), my)
+    )
+  ]
+  out <- data.table(
+    cell_ID = as.character(sv$poly_ID),
+    sdimx = NA_real_,
+    sdimy = NA_real_
+  )
+  out[ct$geom, `:=`(sdimx = ct$sdimx, sdimy = ct$sdimy)]
+  out[]
+}
+old <- getSpatialLocations(g, output = "spatLocsObj")
+xy <- centres_by_id(
+  getPolygonInfo(g, polygon_name = "cell", return_giottoPolygon = TRUE)[]
+)[!is.na(sdimx)]
+g <- setSpatialLocations(
+  g,
+  createSpatLocsObj(
+    coordinates = xy[, .(sdimx, sdimy, cell_ID)],
+    name = objName(old),
+    spat_unit = spatUnit(old),
+    provenance = prov(old),
+    verbose = FALSE
+  ),
+  verbose = FALSE,
+  initialize = FALSE
+)
+
+## A cell without an outline has no position and cannot be kept ##
 sl <- as.character(getSpatialLocations(g, output = "data.table")$cell_ID)
 cid <- as.character(pDataDT(g)$cell_ID)
 lost <- setdiff(cid, sl)

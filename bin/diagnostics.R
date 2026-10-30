@@ -36,7 +36,7 @@ norm_mat <- getExpression(merged, values = "normalized", output = "matrix")
 pd <- pDataDT(merged)
 if (!col %in% names(pd)) {
   clus <- grep(
-    "^leiden_clus_res|^sub_|insitutype|niche_id|cell_type",
+    "^leiden_clus_res|^sub_|insitutype|^niche_|cell_type",
     names(pd),
     value = TRUE
   )

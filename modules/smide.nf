@@ -2,6 +2,8 @@ process SMIDE {
     tag   "${sample}:${cell_type}"
     label 'process_smide'
     publishDir path: { "${params.outdir}/tables/09_de/smide/${sample}" }, mode: 'copy', pattern: "*.{csv,txt}"
+    // smiDE's own volcano of each fit
+    publishDir path: { "${params.outdir}/figures/09_de/smide/${sample}" }, mode: 'copy', pattern: "*.{png,pdf,jpg}"
 
     input:
         tuple val(id), path(obj, stageAs: 'input_giotto'), val(sample), val(cell_type)
@@ -11,6 +13,7 @@ process SMIDE {
         path "*_smide_overlap_ratio.csv", emit: overlap, optional: true
         path "*_smide_skipped.csv",       emit: skipped
         path "*_smide_failed_genes.txt",  emit: failed,  optional: true
+        path "*.{png,pdf,jpg}", optional: true
 
     script:
     def fmla = params.smide_formula ? "--formula '${params.smide_formula}'" : ""
@@ -24,6 +27,7 @@ process SMIDE {
         --min_cells_per_niche ${params.smide_min_cells_per_niche} \\
         --family ${params.smide_family} --spatial_model '${params.smide_spatial_model}' \\
         --k_prop_n ${params.smide_k_prop_n} --comparisons '${params.smide_comparisons}' \\
-        ${fmla} --cores ${task.cpus} --seed ${params.seed} --outdir . --python '${params.python_path}'
+        ${fmla} --cores ${task.cpus} --seed ${params.seed} --fig_format '${params.fig_format}' \\
+        --outdir . --python '${params.python_path}'
     """
 }

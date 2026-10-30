@@ -1,0 +1,31 @@
+label,colour,group,display
+PT,#87CEFF,non_immune,PT
+PT_injured,#6CA6CD,non_immune,PT injured
+PEC,#4682B4,non_immune,PEC
+TAL,#D3BFEC,non_immune,TAL
+TAL_DCT,#B49BE0,non_immune,TAL/DCT
+DCT,#9474C8,non_immune,DCT
+CNT,#BFE8E3,non_immune,CNT
+Principal_cell,#5BBDB3,non_immune,Principal cell
+Intercalated_A,#2B8F89,non_immune,Intercalated A
+Intercalated_B,#185E5A,non_immune,Intercalated B
+Podocyte,#F2C14E,non_immune,Podocyte
+Endothelial,#8CC277,non_immune,Endothelial
+Glomerular_EC,#4F9944,non_immune,Glomerular EC
+Arteriolar_EC,#285F2A,non_immune,Arteriolar EC
+Mesangial,#A9BDA6,non_immune,Mesangial
+Glomerular,#BDB76B,non_immune,Glomerular
+vSMC,#B9A08A,non_immune,vSMC
+Pericyte,#8A705C,non_immune,Pericyte
+Renin_JG,#5A4637,non_immune,Renin/JG
+Fibroblast,#FBC29C,non_immune,Fibroblast
+Myofibroblast,#E3893F,non_immune,Myofibroblast
+Plasma_cell,#00FA9A,immune,B cell lineage
+T_NK,#9400D3,immune,T/NK
+Macrophage,#8B1C62,immune,Macrophage
+Monocyte,#C71585,immune,Monocyte
+Unassigned,#BDBDBD,untyped,Unassigned
+CNT_CD,#5BBDB3,non_immune,CNT/CD
+Mural,#B9A08A,non_immune,Mural
+Lymphocyte,#9400D3,immune,Lymphocyte
+Low_count,#BDBDBD,untyped,Low count

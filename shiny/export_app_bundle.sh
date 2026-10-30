@@ -2,15 +2,17 @@
 # Export a Giotto object to the Rshiny/spatial explorer contract.
 # Writes <results>/local_export/, which load_cosmx_nf.R reads.
 #
-#   ./export_app_bundle.sh [run_id] [n_de_genes] [poly_compress] [obj_subdir]
-# defaults: run_id=full  n_de_genes=25  poly_compress=xz  obj_subdir=objects/discover
+#   ./export_app_bundle.sh [run_id] [genes] [poly_compress] [obj_subdir]
+# defaults: run_id=full  genes=all  poly_compress=xz  obj_subdir=objects/discover
+# genes=all exports every gene on the panel; a number N exports the canonical markers plus the
+# top N DE genes per cluster, a smaller bundle.
 # poly_compress=none skips the polygon write but still reports the vertex count.
 # obj_subdir=objects/subcluster exports the --stage subcluster object instead, which carries the
 # sub_<res> columns; objects/annotate also carries cell_type. The bundle lands in local_export either way.
 set -euo pipefail
 PIPE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN=${1:-full}
-NDE=${2:-25}
+GENES=${2:-all}
 PCZ=${3:-xz}
 OBJ=${4:-objects/discover}
 RES="$PIPE/../Runs/$RUN/results"
@@ -29,10 +31,11 @@ LOG="$PIPE/../Runs/$RUN/logs/export_app_bundle.txt"
 mkdir -p "$(dirname "$LOG")" "$RES/local_export"
 
 apptainer exec "${OPTS[@]}" \
-  "$SIF" Rscript --vanilla - "$RES" "$NDE" "$LOG" "$PCZ" "$PIPE" "$OBJ" <<'RS'
+  "$SIF" Rscript --vanilla - "$RES" "$GENES" "$LOG" "$PCZ" "$PIPE" "$OBJ" <<'RS'
 suppressPackageStartupMessages({ library(Giotto); library(data.table); library(Matrix) })
 a   <- commandArgs(trailingOnly = TRUE)
-res <- a[1]; nde <- as.integer(a[2]); log <- a[3]; pcz <- a[4]; pipe <- a[5]
+res <- a[1]; gsel <- a[2]; log <- a[3]; pcz <- a[4]; pipe <- a[5]
+if (gsel != "all" && !grepl("^[0-9]+$", gsel)) stop("genes must be 'all' or a number, not '", gsel, "'")
 obj <- if (length(a) >= 6 && nzchar(a[6])) a[6] else "objects/discover"
 ex  <- file.path(res, "local_export")   # where load_cosmx_nf() reads from
 con <- file(log, "w"); sink(con, split = TRUE); sink(con, type = "message")
@@ -106,21 +109,27 @@ cat("cells:", nrow(cells), "rows,", length(keep), "metadata columns\n")
 cat("  ", paste(keep, collapse = ", "), "\n")
 saveRDS(cells, file.path(ex, "cells_umap_clusters.rds"))
 
-# --- expression: canonical markers + top-N DE per cluster of every diagnosed column --------
+# --- expression: every gene, or canonical markers + top-N DE per cluster of every diagnosed column
 nm_mat <- getExpression(g, values = "normalized", output = "matrix")
-mk <- tryCatch(read.csv(file.path(pipe, "assets/canonical_markers.csv"))$gene,
-               error = function(e) character())
-de_genes <- character()
-for (f in list.files(file.path(res, "tables"), "_de_top\\.csv$", recursive = TRUE, full.names = TRUE)) {
-  d <- fread(f)
-  # name the j expression: an unnamed one comes back as V1 and $feats is silently NULL
-  de_genes <- c(de_genes, d[, .(feats = head(feats[order(ranking)], nde)), by = cluster]$feats)
+if (gsel == "all") {
+  genes <- rownames(nm_mat)
+  cat("expression: all", length(genes), "genes\n")
+} else {
+  nde <- as.integer(gsel)
+  mk <- tryCatch(read.csv(file.path(pipe, "assets/canonical_markers.csv"))$gene,
+                 error = function(e) character())
+  de_genes <- character()
+  for (f in list.files(file.path(res, "tables"), "_de_top\\.csv$", recursive = TRUE, full.names = TRUE)) {
+    d <- fread(f)
+    # name the j expression: an unnamed one comes back as V1 and $feats is silently NULL
+    de_genes <- c(de_genes, d[, .(feats = head(feats[order(ranking)], nde)), by = cluster]$feats)
+  }
+  genes <- intersect(unique(c(mk, de_genes)), rownames(nm_mat))
+  if (!length(de_genes))
+    cat("WARNING: no DE genes found under", file.path(res, "tables"), "\n")
+  cat("expression:", length(genes), "genes (", length(intersect(mk, rownames(nm_mat))),
+      "markers +", length(setdiff(genes, mk)), "DE )\n")
 }
-genes <- intersect(unique(c(mk, de_genes)), rownames(nm_mat))
-if (!length(de_genes))
-  cat("WARNING: no DE genes found under", file.path(res, "tables"), "\n")
-cat("expression:", length(genes), "genes (", length(intersect(mk, rownames(nm_mat))),
-    "markers +", length(setdiff(genes, mk)), "DE )\n")
 sub <- nm_mat[genes, match(cells$cell_ID, colnames(nm_mat)), drop = FALSE]
 saveRDS(Matrix(sub, sparse = TRUE), file.path(ex, "marker_expr_normalized.rds"))
 

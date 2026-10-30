@@ -1,7 +1,7 @@
 process COMPOSITION {
     tag   'composition'
     label 'process_light'
-    publishDir path: { "${params.outdir}/figures/06_annotation" }, mode: 'copy', pattern: "*.png"
+    publishDir path: { "${params.outdir}/figures/06_annotation" }, mode: 'copy', pattern: "*.{png,pdf,jpg}"
     publishDir path: { "${params.outdir}/tables/06_annotation" }, mode: 'copy', pattern: "*.csv"
 
     input:
@@ -10,14 +10,15 @@ process COMPOSITION {
 
     output:
         path "*.csv", emit: tables
-        path "*.png"
+        path "*.{png,pdf,jpg}"
 
     script:
     """
     composition.R --input '${obj}' --samplesheet '${samplesheet}' \\
         --compare_by '${params.compare_by}' --compare_baseline '${params.compare_baseline}' \\
         --compare_within '${params.compare_within}' --pair_by '${params.pair_by}' \\
-        --exclude '${params.untyped_celltypes}' \\
-        --outdir . --python '${params.python_path}'
+        --exclude '${params.untyped_celltypes}' --celltype_column '${params.celltype_column}' \\
+        --label_colours '${params.label_colours}' \\
+        --fig_format '${params.fig_format}' --outdir . --python '${params.python_path}'
     """
 }

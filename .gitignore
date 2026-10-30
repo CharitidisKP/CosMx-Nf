@@ -33,8 +33,9 @@ notebooks/.vscode/
 omnipathr-log/
 .DS_Store
 
-# Reference profile matrices -- staged per machine, not shipped
+# Reference profile matrices and NicheNet model files -- staged per machine, not shipped
 assets/profiles/
+assets/nichenet/
 
 # Working docs -- for the next session, not for the repo
 handoff.md
@@ -43,3 +44,6 @@ handoff.md
 conf/site.yaml
 assets/private/
 data/
+
+# A run's curated labels, when the app runs against a results mirror in this folder
+/labels/

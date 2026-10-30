@@ -1,0 +1,9 @@
+variant,genes,values,k_geom,agf,npcs,group,lambdas,resolutions,k_nn,cluster
+old,all,log6000,18,false,30,none,0.2;0.4;0.6;0.8,0.2;0.3;0.4;0.55;0.7;0.8;1;1.2,30,knn_igraph
+docs,hvg,counts,15;30,true,50,none,0.2;0.4;0.6;0.8,0.2;0.3;0.4;0.55;0.7;0.8;1;1.2,50,banksy
+docs_log,hvg,log,15;30,true,50,none,0.2;0.4;0.6;0.8,0.2;0.3;0.4;0.55;0.7;0.8;1;1.2,50,banksy
+docs_above_background,hvg_bg,counts,15;30,true,50,none,0.2;0.4;0.6;0.8,0.2;0.3;0.4;0.55;0.7;0.8;1;1.2,50,banksy
+docs_fov_scaled,hvg,counts,15;30,true,50,fov,0.2;0.4;0.6;0.8,0.2;0.3;0.4;0.55;0.7;0.8;1;1.2,50,banksy
+middle,hvg,log,18,false,30,none,0.2;0.4;0.6;0.8,0.2;0.3;0.4;0.55;0.7;0.8;1;1.2,50,banksy
+middle_above_background,hvg_bg,log,18,false,30,none,0.2;0.4;0.6;0.8,0.2;0.3;0.4;0.55;0.7;0.8;1;1.2,50,banksy
+middle_fov_scaled,hvg,log,18,false,30,fov,0.2;0.4;0.6;0.8,0.2;0.3;0.4;0.55;0.7;0.8;1;1.2,50,banksy

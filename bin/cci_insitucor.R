@@ -35,6 +35,10 @@ setkey(locs, cell_ID)
 xy <- as.matrix(locs[ids, .(sdimx, sdimy)])
 rownames(xy) <- ids
 
+## Only these tables are used below. The object would hold memory for the whole run ##
+rm(merged)
+invisible(gc())
+
 ## InSituCor wants cells x genes, scaled to the same total per cell ##
 total <- Matrix::colSums(raw)
 counts <- Matrix::t(raw) * (mean(total) / pmax(total, 1))

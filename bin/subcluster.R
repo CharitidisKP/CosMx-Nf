@@ -52,12 +52,18 @@ if (!opt$basis %in% names(pd)) {
     "subcluster.R: --basis '",
     opt$basis,
     "' not on the object. Available cluster columns: ",
-    paste(grep("^leiden_clus_res", names(pd), value = TRUE), collapse = ", ")
+    paste(grep("^leiden_clus_res|^sub_", names(pd), value = TRUE), collapse = ", ")
   )
 }
 
-## The new column carries its basis, so two runs never collide ##
-out_col <- paste0("sub_", sub("^leiden_clus_", "", opt$basis))
+## The new column carries its basis, so two runs never collide. Subclustering a subcluster
+## column adds a level: sub_res0.3 -> sub_res0.3_l2, whose 3.5 splits into 3.5.1, 3.5.2 ##
+out_col <- if (startsWith(opt$basis, "sub_")) {
+  lv <- suppressWarnings(as.integer(sub("^.*_l([0-9]+)$", "\\1", opt$basis)))
+  if (is.na(lv)) paste0(opt$basis, "_l2") else sub("_l[0-9]+$", paste0("_l", lv + 1L), opt$basis)
+} else {
+  paste0("sub_", sub("^leiden_clus_", "", opt$basis))
+}
 basis_v <- as.character(pd[[opt$basis]])
 all_cl <- unique(basis_v)
 all_cl <- all_cl[order(
@@ -263,9 +269,14 @@ sub_one <- function(cl) {
   )
 }
 
-## Build on an existing column so a second run adds its cluster instead of dropping the first ##
+## Build on an existing column so a second run adds its cluster instead of dropping the first.
+## Its earlier parents' embeddings stay too, unless this run redoes that parent ##
 sub_v <- if (out_col %in% names(pd)) as.character(pd[[out_col]]) else basis_v
 umaps <- list()
+for (uc in grep(paste0("^", gsub(".", "[.]", out_col, fixed = TRUE), "_c.+_UMAP[12]$"),
+                names(pd), value = TRUE)) {
+  umaps[[uc]] <- pd[[uc]]
+}
 for (cl in want) {
   r <- sub_one(cl)
   if (is.null(r$U1)) {
@@ -299,14 +310,13 @@ for (cl in want) {
   )
 }
 
-## "3.10" sorts after "3.2" ##
-key <- do.call(
-  rbind,
-  lapply(strsplit(unique(sub_v), ".", fixed = TRUE), function(z) {
-    suppressWarnings(as.numeric(c(z, NA_character_))[1:2])
-  })
-)
-lev <- unique(sub_v)[order(key[, 1], key[, 2], na.last = FALSE)]
+## "3.10" sorts after "3.2", and "3.5.2" after "3.5.1": compare every level numerically ##
+parts <- strsplit(unique(sub_v), ".", fixed = TRUE)
+depth <- max(lengths(parts))
+key <- do.call(rbind, lapply(parts, function(z) {
+  suppressWarnings(as.numeric(c(z, rep(NA_character_, depth))[seq_len(depth)]))
+}))
+lev <- unique(sub_v)[do.call(order, c(as.data.frame(key), na.last = FALSE))]
 
 meta <- stats::setNames(
   data.frame(cell_ID = pd$cell_ID, factor(sub_v, levels = lev)),
@@ -342,7 +352,8 @@ summ <- as.data.frame(
   table(sd[[out_col]], dnn = "subcluster"),
   responseName = "n_cells"
 )
-summ$parent <- sub("\\..*$", "", as.character(summ$subcluster))
+## The parent is the subcluster one level up: 3.1 -> 3, 3.5.1 -> 3.5 ##
+summ$parent <- sub("\\.[^.]+$", "", as.character(summ$subcluster))
 if ("sample_id" %in% names(sd)) {
   mix <- table(sd[[out_col]], sd$sample_id)
   top <- colnames(mix)[max.col(mix, "first")]

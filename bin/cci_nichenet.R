@@ -61,6 +61,10 @@ net <- getSpatialNetwork(
   name = "Delaunay_network",
   output = "networkDT"
 )
+
+## Only these tables are used below. The object would hold memory for the whole run ##
+rm(merged)
+invisible(gc())
 detection <- function(ids) Matrix::rowMeans(norm[, ids, drop = FALSE] > 0)
 
 ## Comparisons come from the samplesheet: each level of compare_by against the

@@ -1,12 +1,15 @@
 nextflow.enable.dsl = 2
 
 include { DISCOVERY }   from './subworkflows/discovery'
-include { ANNOTATION; SPATIAL; DE } from './subworkflows/annotation'
+include { ANNOTATION; SPATIAL; DE; banksy_settings; banksy_key } from './subworkflows/annotation'
 include { CCI }         from './subworkflows/cci'
 include { DIAGNOSTICS } from './modules/diagnostics'
 include { SUPERVISED; ATTACH_SUPERVISED } from './modules/insitutype_supervised'
 include { SUBCLUSTER }  from './modules/subcluster'
 include { REPORT }      from './modules/report'
+// The sweep runs the spatial stage's BANKSY steps under its own names, with every settings set
+include { BANKSY_PREP as BANKSY_SWEEP_PREP; BANKSY_SAMPLE as BANKSY_SWEEP } from './modules/banksy'
+include { BANKSY_SWEEP_COLLECT } from './modules/banksy_sweep'
 include { isIncluded }  from './subworkflows/samplesheet'
 
 // Short commit of the pipeline checkout, recorded in run_report.md
@@ -38,44 +41,175 @@ def stage_obj(stage) {
     params.merged_giotto ?: "${params.outdir}/objects/${stage}/giotto"
 }
 
-// Attach cell_type from the curated labels CSV, and count it.
-workflow annotate {
-    if (!params.labels)        error "annotate requires --labels <cluster_labels.csv>"
-    if (!params.cluster_basis) error "annotate requires --cluster_basis <cluster column, e.g. sub_res0.3>"
-    // Subcluster columns live on the subcluster object, Leiden columns on the discover one
-    def mg = stage_obj(params.cluster_basis.toString().startsWith('sub_') ? 'subcluster' : 'discover')
+// The run's curated labels, beside its results: cluster_labels.<basis>.csv for each clustering
+// labelled, label_overrides.csv with the per-cell edits, and cluster_basis.txt naming the
+// clustering cell_type comes from. The Shiny app writes the same files
+def labels_dir() {
+    file(params.labels_dir ?: "${params.outdir}/../labels").normalize()
+}
+
+// What annotate applies: the clustering, its cluster labels and the per-cell edits, each read
+// from labels_dir unless a param names it, and a digest of the three. A stage compares the
+// digest with the one its input object was built from
+def label_state() {
+    def dir = labels_dir()
+    def basis = params.cluster_basis ? params.cluster_basis.toString() : null
+    def pick = file("${dir}/cluster_basis.txt")
+    if (!basis && pick.exists()) basis = pick.text.trim()
+    if (!basis) {
+        def found = dir.isDirectory() ? dir.list().findAll { n -> n ==~ /cluster_labels\..+\.csv/ } : []
+        def bases = found.collect { n -> n.replaceFirst(/^cluster_labels\./, '').replaceFirst(/\.csv$/, '') }
+        if (bases.size() != 1)
+            error "No clustering chosen for cell_type. Write its name to ${dir}/cluster_basis.txt " +
+                  "(the app's Cluster labels panel does), or pass --cluster_basis. " +
+                  (bases ? "Labels found for: ${bases.join(', ')}" : "${dir} holds no cluster_labels.<basis>.csv")
+        basis = bases[0]
+    }
+    def labels = file(params.labels ?: "${dir}/cluster_labels.${basis}.csv")
+    if (!labels.exists())
+        error "No cluster labels for ${basis} at ${labels}. Save them in the app's Cluster labels panel, " +
+              "copy the draft from tables/06_annotation/labels/, or pass --labels."
+    def overrides = file(params.label_overrides ?: "${dir}/label_overrides.csv")
+    if (params.label_overrides && !overrides.exists())
+        error "No label overrides at ${overrides}"
+    // Without edits, a file holding only the header
+    if (!overrides.exists()) overrides = file("${projectDir}/assets/no_label_overrides.csv")
+    def digest = "${basis}\n${labels.text}\n${overrides.text}".toString().md5()
+    [basis: basis, labels: labels, overrides: overrides, digest: digest]
+}
+
+// The label state a stage's published object was built from, or null
+def built_from(stage) {
+    def f = file("${params.outdir}/objects/${stage}/label_state.txt")
+    f.exists() ? f.text.trim() : null
+}
+
+// The clustering object annotate reads: subcluster columns live on the subcluster object,
+// Leiden columns on the discover one
+def clustering_obj(basis) {
+    def mg = stage_obj(basis.startsWith('sub_') ? 'subcluster' : 'discover')
     if (!file(mg).exists())
         error "annotate: no Giotto object at ${mg}. Pass --merged_giotto <dir> (a saveGiotto folder)."
-    ANNOTATION( mg, params.labels )
+    mg
+}
+
+// Attach cell_type from the run's labels, and count it.
+workflow annotate {
+    def st = label_state()
+    log.info "annotate: ${st.basis}, labels ${st.labels}, edits ${st.overrides}"
+    ANNOTATION( clustering_obj(st.basis), st )
     REPORT( params.stage, git_commit(), ANNOTATION.out.tables.collect().ifEmpty([]), file(params.input) )
+}
+
+// The labelled object for a later stage. The published one when it was built from the current
+// labels; otherwise annotate runs first, in this launch. --merged_giotto is taken as it is
+workflow LABELLED {
+    main:
+        def st = label_state()
+        // Not def: emit reads them
+        obj = Channel.empty()
+        counts = Channel.empty()
+        tables = Channel.empty()
+        if (params.merged_giotto || built_from('annotate') == st.digest) {
+            def mg = stage_obj('annotate')
+            if (!file(mg).exists())
+                error "No labelled object at ${mg}. Run --stage annotate, or pass --merged_giotto."
+            obj = Channel.value(tuple('merged', file(mg)))
+            counts = Channel.fromPath("${params.outdir}/tables/06_annotation/cell_type_counts.csv")
+        } else {
+            log.info "The labels changed since annotate last ran (or it recorded none), so annotate runs first"
+            ANNOTATION( clustering_obj(st.basis), st )
+            obj = ANNOTATION.out.annotated
+            counts = ANNOTATION.out.counts
+            tables = ANNOTATION.out.tables
+        }
+
+    emit:
+        obj    = obj
+        counts = counts
+        tables = tables
+        digest = Channel.value(st.digest)
+}
+
+// The spatial object for cci and de, rebuilt in this launch when it is behind the labels or the
+// BANKSY settings, with annotate first when that is behind the labels too
+workflow SPATIAL_OBJECT {
+    main:
+        def st = label_state()
+        // Not def: emit reads them
+        obj = Channel.empty()
+        counts = Channel.empty()
+        tables = Channel.empty()
+        if (params.merged_giotto || built_from('spatial') == "${st.digest}:${banksy_key(banksy_settings())}".toString()) {
+            def mg = stage_obj('spatial')
+            if (!file(mg).exists())
+                error "No spatial object at ${mg}. Run --stage spatial, or pass --merged_giotto."
+            obj = Channel.value(tuple('merged', file(mg)))
+            counts = Channel.fromPath("${params.outdir}/tables/06_annotation/cell_type_counts.csv")
+        } else {
+            log.info "The labels or the BANKSY settings changed since the spatial stage last ran (or it recorded none), so it runs first"
+            LABELLED()
+            SPATIAL( LABELLED.out.obj, LABELLED.out.digest )
+            obj = SPATIAL.out.spatial
+            counts = LABELLED.out.counts
+            tables = LABELLED.out.tables.mix(SPATIAL.out.tables)
+        }
+
+    emit:
+        obj    = obj
+        counts = counts
+        tables = tables
 }
 
 // Delaunay network, BANKSY domains, B-lineage subclustering.
 workflow spatial {
-    def mg = stage_obj('annotate')
-    if (!file(mg).exists())
-        error "spatial: no labelled object at ${mg}. Run --stage annotate first, or pass --merged_giotto."
-    SPATIAL( mg )
-    REPORT( params.stage, git_commit(), SPATIAL.out.tables.collect().ifEmpty([]), file(params.input) )
+    LABELLED()
+    SPATIAL( LABELLED.out.obj, LABELLED.out.digest )
+    REPORT( params.stage, git_commit(),
+            LABELLED.out.tables.mix(SPATIAL.out.tables).collect().ifEmpty([]), file(params.input) )
 }
 
 // Ligand-receptor and spatial-correlation methods, on the BANKSY object.
 workflow cci {
-    def mg = stage_obj('spatial')
-    if (!file(mg).exists())
-        error "cci: no spatial object at ${mg}. Run --stage spatial first, or pass --merged_giotto."
-    CCI( Channel.value(tuple('merged', file(mg))) )
-    REPORT( params.stage, git_commit(), CCI.out.tables.collect().ifEmpty([]), file(params.input) )
+    // Checked here, so a missing model file stops the stage before any task starts
+    if (params.nichenet_model_dir) {
+        def nn_dir   = file(params.nichenet_model_dir)
+        def nn_files = nn_dir.isDirectory() ? nn_dir.list().toList() : []
+        def nn_miss  = ['ligand_target_matrix', 'lr_network', 'weighted_networks']
+            .findAll { p -> !nn_files.any { n -> n.startsWith(p) && n.endsWith('.rds') } }
+        if (nn_miss)
+            error "cci: no ${nn_miss.join(', ')} .rds in ${params.nichenet_model_dir}. " +
+                  "Stage the NicheNet model files there, or set nichenet_model_dir = '' in the config to skip NicheNet."
+    }
+    SPATIAL_OBJECT()
+    CCI( SPATIAL_OBJECT.out.obj )
+    REPORT( params.stage, git_commit(),
+            SPATIAL_OBJECT.out.tables.mix(CCI.out.tables).collect().ifEmpty([]), file(params.input) )
 }
 
-// smiDE, fanned out over sample x cell type.
+// smiDE, fanned out over sample x cell type, and pseudobulk DE across samples. The cell types
+// come from smide_celltypes, or else from cell_type itself
 workflow de {
-    if (!params.labels) error "de requires --labels <cluster_labels.csv> for the cell-type list"
-    def mg = stage_obj('spatial')
-    if (!file(mg).exists())
-        error "de: no spatial object at ${mg}. Run --stage spatial first, or pass --merged_giotto."
-    DE( mg, params.labels )
-    REPORT( params.stage, git_commit(), DE.out.tables.collect().ifEmpty([]), file(params.input) )
+    SPATIAL_OBJECT()
+    DE( SPATIAL_OBJECT.out.obj, SPATIAL_OBJECT.out.counts )
+    REPORT( params.stage, git_commit(),
+            SPATIAL_OBJECT.out.tables.mix(DE.out.tables).collect().ifEmpty([]), file(params.input) )
+}
+
+// BANKSY per biopsy over every settings set in banksy_variants, on the spatial object, by the
+// same script the spatial stage runs. Publishes beside the spatial stage's BANKSY outputs and
+// changes no object.
+workflow banksy_sweep {
+    SPATIAL_OBJECT()
+    BANKSY_SWEEP_PREP( SPATIAL_OBJECT.out.obj.map { _id, obj -> obj }, params.banksy_sweep_samples )
+    def ch_raw = BANKSY_SWEEP_PREP.out.raw.flatten()
+        .map { f -> tuple(f.name.replaceFirst('_raw\\.rds$', ''), f) }
+    def ch_meta = BANKSY_SWEEP_PREP.out.meta.flatten()
+        .map { f -> tuple(f.name.replaceFirst('_meta\\.csv\\.gz$', ''), f) }
+    def ch_variants = Channel.fromPath(params.banksy_variants).splitCsv(header: true)
+    BANKSY_SWEEP( ch_raw.join(ch_meta).combine(ch_variants), BANKSY_SWEEP_PREP.out.hvg.first() )
+    BANKSY_SWEEP_COLLECT( BANKSY_SWEEP.out.labels.collect(), BANKSY_SWEEP.out.time.collect(),
+                          BANKSY_SWEEP_PREP.out.meta.collect() )
 }
 
 // Optional pass between discover and annotate. Publishes to objects/subcluster, leaving the
@@ -167,7 +301,8 @@ workflow rebuild_report {
 
 workflow {
     // A mistyped stage would otherwise fall through to discover and replace its outputs
-    def stages = ['discover', 'subcluster', 'diagnose', 'supervised', 'annotate', 'spatial', 'cci', 'de', 'report']
+    def stages = ['discover', 'subcluster', 'diagnose', 'supervised', 'annotate', 'spatial', 'cci', 'de',
+                  'banksy_sweep', 'report']
     if (!(params.stage in stages)) error "--stage must be one of: ${stages.join(', ')}"
 
     // Every launch leaves its parameters and a line in the stage log beside the Nextflow reports
@@ -186,6 +321,7 @@ workflow {
     else if (params.stage == 'subcluster') subcluster()
     else if (params.stage == 'diagnose')   diagnose()
     else if (params.stage == 'supervised') supervised()
+    else if (params.stage == 'banksy_sweep') banksy_sweep()
     else if (params.stage == 'report')     rebuild_report()
     else                                   discover()
 }

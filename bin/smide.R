@@ -12,7 +12,7 @@ opt <- list(
   cell_type = arg("cell_type"),
   sample_col = arg("sample_col", "sample_id"),
   celltype_column = arg("celltype_column", "cell_type"),
-  groupvar = arg("groupvar", "niche_id_lam0.8"),
+  groupvar = arg("groupvar", "niche_type_lam0.8"),
   radius = as.numeric(arg("radius", "415")),
   overlap_threshold = as.numeric(arg("overlap_threshold", "0.8")),
   min_detection = as.numeric(arg("min_detection", "0.01")),
@@ -38,6 +38,10 @@ suppressPackageStartupMessages({
 })
 setDTthreads(1)
 set.seed(opt$seed)
+## The figure helpers sit beside this script ##
+bin <- dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1]))
+source(file.path(bin, "cosmx_figures.R"))
+set_fig_format(arg("fig_format", "png"))
 dir.create(opt$outdir, recursive = TRUE, showWarnings = FALSE)
 split_arg <- function(s) {
   v <- trimws(strsplit(s, ",")[[1]])
@@ -97,6 +101,10 @@ m <- pd[match(ids, pd$cell_ID)]
 locs <- getSpatialLocations(merged, output = "data.table")
 setkey(locs, cell_ID)
 raw <- getExpression(merged, values = "raw", output = "matrix")[, ids]
+
+## Only these tables are used below. Up to five tasks run at once, each holding its own copy ##
+rm(merged)
+invisible(gc())
 meta <- data.table(
   cell_ID = ids,
   sdimx = locs[ids]$sdimx,
@@ -295,6 +303,28 @@ for (sm in split_arg(opt$spatial_model)) {
     d[, fdr := p.adjust(p.value, "BH"), by = result_component]
   }
   res[[sm]] <- d
+  ## smiDE's own volcano of each niche against the rest, the fit's contrasts on one sheet. A
+  ## figure that fails costs only the figure ##
+  ovr <- r[["one.vs.rest"]]
+  if (!is.null(ovr) && nrow(ovr)) {
+    tryCatch(
+      {
+        vp <- smiDE::volcano(ovr, interactive = FALSE, text_size = 10, lblsize = 2.5)
+        if (length(vp)) {
+          nc <- min(3L, length(vp))
+          save_fig(
+            patchwork::wrap_plots(vp, ncol = nc),
+            out_file(paste0("volcano_", sm, ".png")),
+            5 * nc,
+            5 * ceiling(length(vp) / nc)
+          )
+        }
+      },
+      error = function(e) {
+        message("smide.R: no volcano for ", sm, ": ", conditionMessage(e))
+      }
+    )
+  }
 }
 if (!length(res)) {
   skip("fit", "no model produced results")

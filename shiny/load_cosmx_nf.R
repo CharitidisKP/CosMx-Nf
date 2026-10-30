@@ -45,7 +45,7 @@ load_cosmx_nf <- function(root) {
                           intersect("timepoint", names(cells))), drop = FALSE])
     tr <- tolower(as.character(k$treatment))
     ord <- order(tr,
-                 if (!is.null(k$timepoint)) as.character(k$timepoint) else "",
+                 if (!is.null(k$timepoint)) as.character(k$timepoint) else character(nrow(k)),
                  as.character(k[[samp]]))
     cells[[samp]] <- factor(cells[[samp]], levels = as.character(k[[samp]][ord]))
   }
@@ -86,15 +86,24 @@ load_cosmx_nf <- function(root) {
   # own small CSV rsynced.
   for (f in list.files(file.path(root, "tables", "05_subclustering"), "^sub_.+_cells\\.csv$",
                        full.names = TRUE)) {
-    d  <- utils::read.csv(f)
+    # As text: read as numbers, "3.10" becomes 3.1 and two subclusters merge
+    d  <- utils::read.csv(f, colClasses = "character")
+    for (uc in grep("_UMAP[12]$", names(d), value = TRUE)) d[[uc]] <- as.numeric(d[[uc]])
     nm <- sub("^(sub_.+)_cells\\.csv$", "\\1", basename(f))
     if (!all(c("cell_ID", nm) %in% names(d))) next
     v <- as.character(d[[nm]])[match(cells$cell_ID, d$cell_ID)]
     # "3.10" is not the number 3.1: sort on parent and child separately or they collide
     u <- unique(v[!is.na(v)])
-    k <- vapply(strsplit(u, ".", fixed = TRUE),
-                function(z) suppressWarnings(as.numeric(c(z, NA_character_))[1:2]), numeric(2))
-    cells[[nm]] <- factor(v, levels = u[order(k[1, ], k[2, ], na.last = FALSE)])
+    ps <- strsplit(u, ".", fixed = TRUE); dp <- max(1L, lengths(ps))
+    k <- vapply(ps, function(z) suppressWarnings(as.numeric(c(z, rep(NA_character_, dp))[seq_len(dp)])),
+                numeric(dp))
+    k <- matrix(k, nrow = dp)
+    cells[[nm]] <- factor(v, levels = u[do.call(order, c(lapply(seq_len(dp), function(j) k[j, ]),
+                                                          na.last = FALSE))])
+    # Per-parent embeddings ride along in the same CSV, so a new subcluster run shows in the
+    # Subclusters tab without a re-export
+    for (uc in grep(paste0("^", nm, "_c.+_UMAP[12]$"), names(d), value = TRUE))
+      if (!uc %in% names(cells)) cells[[uc]] <- d[[uc]][match(cells$cell_ID, d$cell_ID)]
   }
 
   # Per-cell confidence. The bundle deliberately carries no numeric score columns, but each
@@ -189,13 +198,11 @@ load_cosmx_nf <- function(root) {
   diag <- de <- list()
   for (f in list.files(dd, "^cluster_labels\\..+\\.template\\.csv$", full.names = TRUE)) {
     col <- sub("^cluster_labels\\.(.+)\\.template\\.csv$", "\\1", basename(f))
-    t <- utils::read.csv(f)
-    t$cluster_id <- as.character(t$cluster_id)
+    t <- utils::read.csv(f, colClasses = c(cluster_id = "character"))
     diag[[col]] <- t[order(-t$n_cells), ]
     g <- file.path(dirname(f), paste0(col, "_de_top.csv"))
     if (file.exists(g)) {
-      x <- utils::read.csv(g)
-      x$cluster <- as.character(x$cluster)
+      x <- utils::read.csv(g, colClasses = c(cluster = "character"))
       de[[col]] <- x
     }
   }

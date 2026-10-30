@@ -14,7 +14,9 @@ opt <- list(
   compare_within = arg("compare_within", "treatment"),
   pair_by = arg("pair_by", "subject_id"),
   exclude = arg("exclude"),
-  sample_col = arg("sample_col", "sample_id")
+  sample_col = arg("sample_col", "sample_id"),
+  celltype_column = arg("celltype_column", "cell_type"),
+  label_colours = arg("label_colours")
 )
 
 if (nzchar(opt$python)) {
@@ -26,6 +28,10 @@ suppressPackageStartupMessages({
   library(data.table)
   library(ggplot2)
 })
+## The figure helpers sit beside this script ##
+bin <- dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1]))
+source(file.path(bin, "cosmx_figures.R"))
+set_fig_format(arg("fig_format", "png"))
 dir.create(opt$outdir, recursive = TRUE, showWarnings = FALSE)
 split_arg <- function(s) {
   v <- trimws(strsplit(s, ",")[[1]])
@@ -59,7 +65,7 @@ ss[!nzchar(subject), subject := NA_character_]
 ## cells but not towards the typed shares, so a change in their share cannot move the rest ##
 tab <- as.data.table(table(
   sample_id = pd[[opt$sample_col]],
-  cell_type = pd$cell_type
+  cell_type = pd[[opt$celltype_column]]
 ))
 setnames(tab, "N", "n_cells")
 tab[, typed := !cell_type %in% split_arg(opt$exclude)]
@@ -118,33 +124,50 @@ fwrite(
   file.path(opt$outdir, "composition_by_sample.csv")
 )
 fwrite(chg, file.path(opt$outdir, "composition_paired_change.csv"))
+style <- read_label_style(opt$label_colours)
+lv <- label_levels(tab$cell_type, style)
+## Untyped labels at the foot of each bar, as the maps draw them underneath ##
+lv <- c(intersect(lv, split_arg(opt$exclude)), setdiff(lv, split_arg(opt$exclude)))
+tab[, cell_type := factor(cell_type, levels = rev(lv))]
 p <- ggplot(tab, aes(sample_id, share_of_all, fill = cell_type)) +
-  geom_col() +
+  geom_col(width = 0.8) +
   facet_grid(~group, scales = "free_x", space = "free_x") +
+  scale_fill_manual(
+    values = label_colours(lv, style),
+    breaks = lv,
+    labels = function(x) display_name(x, style)
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.02))) +
+  guides(fill = guide_legend(ncol = 1)) +
   labs(x = NULL, y = "Share of all cells", fill = NULL) +
-  theme_minimal(base_size = 11) +
+  theme_cosmx() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-ggsave(
-  file.path(opt$outdir, "composition_barplot.png"),
+save_fig(
   p,
-  width = max(6, 3 + 0.6 * uniqueN(tab$sample_id)),
-  height = 6,
-  dpi = 150,
-  bg = "white"
+  file.path(opt$outdir, "composition_barplot.png"),
+  max(6, 3 + 0.6 * uniqueN(tab$sample_id)),
+  6
 )
 if (nrow(chg)) {
+  subjects <- sort(unique(chg$subject))
   q <- ggplot(chg, aes(log2_change, cell_type, colour = subject)) +
     geom_vline(xintercept = 0, colour = "grey60") +
-    geom_point(size = 2) +
+    geom_point(size = 2.4) +
     facet_wrap(~comparison) +
+    scale_colour_manual(values = stats::setNames(
+      rep_len(SUBJECT_COLOURS, length(subjects)),
+      subjects
+    )) +
+    scale_y_discrete(
+      limits = rev(intersect(lv, chg$cell_type)),
+      labels = function(x) display_name(x, style)
+    ) +
     labs(x = "log2 change in share of typed cells", y = NULL, colour = NULL) +
-    theme_minimal(base_size = 11)
-  ggsave(
-    file.path(opt$outdir, "composition_paired_change.png"),
+    theme_cosmx()
+  save_fig(
     q,
-    width = max(6, 3 + 3 * uniqueN(chg$comparison)),
-    height = max(4, 1 + 0.3 * uniqueN(chg$cell_type)),
-    dpi = 150,
-    bg = "white"
+    file.path(opt$outdir, "composition_paired_change.png"),
+    max(6, 3 + 3 * uniqueN(chg$comparison)),
+    max(4, 1 + 0.3 * uniqueN(chg$cell_type))
   )
 }

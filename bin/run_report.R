@@ -122,8 +122,14 @@ section <- function(title, body) {
   if (length(body)) c(paste("##", title), "", body, "") else NULL
 }
 
-## Header and stages run ##
+## Header and stages run. The basis annotate used comes from its label_source.csv, which
+## names it whether it was passed or read off the run's labels folder ##
 basis <- opt$basis
+ls_f <- file.path(opt$results, "tables", "06_annotation", "label_source.csv")
+if (!nzchar(basis) && file.exists(ls_f)) {
+  b <- tryCatch(read.csv(ls_f, colClasses = "character")$cluster_basis[1], error = function(e) "")
+  if (length(b) == 1L && !is.na(b)) basis <- b
+}
 pj <- file.path(opt$results, "pipeline_info", "annotate_params.json")
 if (
   !nzchar(basis) &&
@@ -441,6 +447,7 @@ s7 <- guard({
     colClasses = c(lambda = "character")
   )
   bc <- read_tables("^bcell_summary\\.csv$")
+  dn <- read_tables("^immune_density\\.csv$")
   c(
     if (has(sn, c("n_edges", "cross_sample_edges"))) {
       sprintf(
@@ -463,10 +470,59 @@ s7 <- guard({
         md_table(head(top, 10), 2L)
       )
     },
+    if (has(dn, c("tissue_mm2", "bin_um"))) {
+      setnames(dn, 1L, "sample_id")
+      ar <- unique(dn[, .(sample_id, tissue_mm2)])
+      c(
+        sprintf(
+          paste(
+            "- Immune cells per mm&sup2; of tissue and as a share of all cells that passed QC.",
+            "Tissue area counts the %s &micro;m squares that hold a cell, in mm&sup2;: %s.",
+            "Numbers in tables/07_spatial/density/immune_density.csv."
+          ),
+          dn$bin_um[1],
+          paste0(ar$sample_id, " ", sprintf("%.2f", ar$tissue_mm2), collapse = ", ")
+        ),
+        "",
+        fig(
+          "figures/07_spatial/density/immune_density_per_mm2.png",
+          "Immune cells per mm2 of tissue"
+        ),
+        fig(
+          "figures/07_spatial/density/immune_density_pct.png",
+          "Immune cells as a share of all cells"
+        )
+      )
+    },
     if (has(bk, c("lambda", "n_niches"))) {
-      sprintf(
-        "- BANKSY: %s.",
-        paste0(bk$n_niches, " niches at lambda ", bk$lambda, collapse = ", ")
+      ## Runs before the per-sample niches have no mode column: all rows are the joint run ##
+      if (!"mode" %in% names(bk)) {
+        bk[, mode := "merged"]
+      }
+      mg <- bk[mode == "merged"]
+      sm <- bk[mode == "sample"]
+      ty <- bk[mode == "type"]
+      c(
+        if (nrow(mg)) {
+          sprintf(
+            "- BANKSY, all samples together: %s.",
+            paste0(mg$n_niches, " niches at lambda ", mg$lambda, collapse = ", ")
+          )
+        },
+        if (nrow(ty)) {
+          sprintf(
+            "- BANKSY, each sample on its own: %s.",
+            paste0(
+              sm$n_niches[match(ty$lambda, sm$lambda)],
+              " niches at lambda ",
+              ty$lambda,
+              ", matched across samples into ",
+              ty$n_niches,
+              " types",
+              collapse = "; "
+            )
+          )
+        }
       )
     },
     if (!is.null(bc)) c("- B-lineage subclustering:", "", md_table(bc)),
@@ -475,14 +531,47 @@ s7 <- guard({
       "Proximity enrichment"
     ),
     if (has(bk, "lambda")) {
-      unlist(lapply(bk$lambda, function(l) {
-        fig(
-          paste0(
-            "figures/07_spatial/banksy/niche_celltype_heatmap_lam",
-            l,
-            ".png"
+      unlist(lapply(unique(bk$lambda), function(l) {
+        c(
+          fig(
+            paste0(
+              "figures/07_spatial/banksy/niche_celltype_heatmap_lam",
+              l,
+              ".png"
+            ),
+            paste(
+              if (any(bk$mode == "merged")) {
+                "Niches, all samples together, lambda"
+              } else {
+                "Niches of each sample on its own, lambda"
+              },
+              l
+            )
           ),
-          paste("Niches, lambda", l)
+          if (any(bk$mode == "type" & bk$lambda == l)) {
+            fig(
+              paste0(
+                "figures/07_spatial/banksy/niche_type_heatmap_lam",
+                l,
+                ".png"
+              ),
+              paste("Per-sample niches matched into types, lambda", l)
+            )
+          },
+          if (any(bk$mode == "sample" & bk$lambda == l)) {
+            c(
+              "",
+              paste0("Niche maps per sample, lambda ", l, ":"),
+              "",
+              fig_list(paste0(
+                "figures/07_spatial/banksy/niche_spatial_",
+                included,
+                "_niche_sample_lam",
+                l,
+                ".png"
+              ))
+            )
+          }
         )
       }))
     },
@@ -621,16 +710,32 @@ s9 <- guard({
     if (
       has(smd, c("cell_type", "result_component", "target", "log_fc", "fdr"))
     ) {
+      if (!"niche_bleed" %in% names(smd)) {
+        smd[, niche_bleed := NA]
+      }
+      ## One model only, and each gene once: the same gene recurs across niche contrasts ##
+      sm_model <- if ("kmeans" %in% smd$spatial_model) "kmeans" else smd$spatial_model[1]
       top <- smd[
-        result_component == "one.vs.rest" & fdr < 0.05,
-        .(top_genes = paste(head(target[order(fdr)], 8), collapse = ", ")),
+        spatial_model == sm_model & result_component == "one.vs.rest" & fdr < 0.05
+      ][order(fdr)][,
+        .(
+          top_genes = paste(
+            head(
+              unique(fifelse(niche_bleed %in% TRUE, paste0(target, "*"), target)),
+              8
+            ),
+            collapse = ", "
+          )
+        ),
         by = cell_type
       ]
       if (nrow(top)) {
         c(
           "Top genes per cell type (niche against the rest):",
           "",
-          md_table(top)
+          md_table(top),
+          "\\* Inside the tested niche, neighbouring cells of other types carry far more of this gene than the cell type, so the difference may be bleed from neighbours.",
+          ""
         )
       }
     },
@@ -638,6 +743,78 @@ s9 <- guard({
       fig("figures/09_de/smide_meta_volcano.png", "smiDE volcano")
     }
   )
+})
+s9b <- guard({
+  ps <- read_tables("^pb_summary\\.csv$")
+  pde <- read_tables("^pb_de\\.csv$")
+  if (has(ps, c("comparison", "cell_type", "status"))) {
+    if (!"hits_flagged" %in% names(ps)) {
+      ps[, hits_flagged := NA_integer_]
+    }
+    run <- ps[status != "tested" & !startsWith(status, "df 0")]
+    ok <- ps[status == "tested" | startsWith(status, "df 0")]
+    slug <- function(s) gsub("^_|_$", "", gsub("[^A-Za-z0-9]+", "_", s))
+    tested <- unique(ok[status == "tested", comparison])
+    agree <- unique(ok[
+      status == "tested" & n_subjects >= 2 & !startsWith(comparison, "DiD"),
+      comparison
+    ])
+    c(
+      "Pseudobulk DE per cell type, paired on subject where both sides exist:",
+      "",
+      md_table(ok[, .(
+        comparison,
+        cell_type,
+        status,
+        subjects = n_subjects,
+        df,
+        genes = n_genes,
+        hits,
+        hits_agree,
+        flagged = hits_flagged
+      )]),
+      if (nrow(run)) {
+        sprintf(
+          "Not tested: %s.",
+          paste(run[, paste0(comparison, " / ", cell_type)], collapse = "; ")
+        )
+      },
+      "",
+      if (has(pde, c("comparison", "cell_type", "gene", "FDR", "agree"))) {
+        if (!"bleed_risk" %in% names(pde)) {
+          pde[, bleed_risk := NA]
+        }
+        top <- pde[
+          FDR < 0.05 & agree %in% TRUE,
+          .(
+            top_genes = paste(
+              head(
+                fifelse(bleed_risk %in% TRUE, paste0(gene, "*"), gene)[order(
+                  FDR
+                )],
+                8
+              ),
+              collapse = ", "
+            )
+          ),
+          by = .(comparison, cell_type)
+        ]
+        if (nrow(top)) {
+          c(
+            "Top genes where every subject agrees with the pooled change:",
+            "",
+            md_table(top),
+            "\\* Neighbouring cells of other types carry far more of this gene than the cell type at baseline, so the change may be bleed from neighbours.",
+            ""
+          )
+        }
+      },
+      fig_list(c(
+        if (length(tested)) paste0("figures/09_de/pb_volcano_", slug(tested), ".png"),
+        if (length(agree)) paste0("figures/09_de/pb_lfc_agreement_", slug(agree), ".png")
+      ))
+    )
+  }
 })
 
 ## Write ##
@@ -652,7 +829,7 @@ out <- c(
   section("6. Annotation", s6),
   section("7. Spatial", s7),
   section("8. Cell-cell communication", s8),
-  section("9. Differential expression", s9)
+  section("9. Differential expression", c(s9, s9b))
 )
 writeLines(out, file.path(opt$outdir, "run_report.md"))
 message(
