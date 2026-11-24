@@ -1,0 +1,51 @@
+---
+title: "08 - NicheNet"
+subtitle: "The ligands behind each comparison's changes"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+na_f <- find_tab("^nichenet_ligand_activities\\.csv$")
+```
+
+For each comparison and receiver cell type, NicheNet ranks the ligands of the neighbouring senders by how well their known targets predict the receiver's changed genes.
+
+```{r}
+page_top(
+  stages = "cci",
+  Input = "The spatial object, the comparisons from <code>compare_by</code> and the NicheNet model in <code>nichenet_model_dir</code>.",
+  Method = "NicheNet for each receiver in <code>nichenet_receivers</code>, the top <code>nichenet_top_ligands</code> ligands by corrected AUPR, with <code>nichenet_n_targets</code> targets each.",
+  Output = "The tables in <code>tables/08_cci/nichenet</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Runs" = function() tab("^nichenet_summary\\.csv$", note = "Each comparison and receiver, and whether NicheNet ran on it."),
+  "Ligand activity" = function() {
+    na <- read_files(na_f)
+    if (is.null(na) || !all(c("test_ligand", "aupr_corrected", "receiver", "comparison") %in% names(na))) {
+      return(missing_note("NicheNet has not run."))
+    }
+    n_lig <- min(25L, length(unique(na$test_ligand)))
+    n_col <- length(unique(paste(na$comparison, na$receiver)))
+    fig <- rfig("nichenet_activity", c(na_f, RUN$label_colours), function() {
+      top <- na[, .(best = max(aupr_corrected, na.rm = TRUE)), by = test_ligand][order(-best)][seq_len(n_lig), test_ligand]
+      d <- na[test_ligand %in% top]
+      d[, `:=`(test_ligand = factor(test_ligand, rev(top)), receiver = display_name(receiver, STYLE))]
+      heat_plot(d, "receiver", "test_ligand", "aupr_corrected", name = "Corrected\nAUPR") + facet_wrap(~comparison, scales = "free_x")
+    }, 3 + 0.5 * n_col, 1.8 + 0.2 * n_lig)
+    tagList(
+      rgallery(list(`Ligand activity per receiver, the 25 most active ligands` = fig), big = TRUE),
+      tab("^nichenet_ligand_activities\\.csv$", order = "-aupr_corrected"),
+      csv_links(find_tab("^nichenet_ligand_(receptor_links|target_links|senders)\\.csv$"))
+    )
+  },
+  ".pipeline" = function() pipeline_figures(figs("08_cci/nichenet", "\\.png$", FALSE)),
+  "Parameters" = function() {
+    params_table(c("nichenet_receivers", "nichenet_top_ligands", "nichenet_n_targets", "compare_by", "compare_baseline", "compare_within"), "cci")
+  }
+)))
+```

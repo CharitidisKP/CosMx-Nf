@@ -1,8 +1,5 @@
 #!/usr/bin/env Rscript
-## The curated labels onto the object: each cell's cluster label in --cluster_basis, then the
-## per-cell edits in --overrides, by the rules in label_state.R. Writes cell_type (every analysis
-## reads it), cell_type_l1, cell_type_source, cell_type_display (figures draw it) and
-## label_confidence ##
+## Labels each cell by its cluster in --cluster_basis, then by --overrides ##
 a <- commandArgs(trailingOnly = TRUE)
 arg <- function(k, d = "") {
   i <- which(a == paste0("--", k))
@@ -26,6 +23,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -98,8 +96,7 @@ merged <- addCellMetadata(
   column_cell_ID = "cell_ID"
 )
 
-## What the edits changed: high edits from the cluster label to cell_type, low edits from
-## cell_type to the display label ##
+## Writes how many cells the edits moved, by confidence, old label and new label ##
 st[, cluster_label := unname(map[as.character(pd[[opt$cluster_basis]])])]
 fwrite(
   rbind(
@@ -137,8 +134,7 @@ fwrite(
   ],
   file.path(opt$outdir, "cell_type_display_counts.csv")
 )
-## The label state this object was built from, which the later stages compare against, and
-## the files it came from ##
+## Writes the label state the object was built from, and its source files ##
 if (nzchar(opt$label_state)) {
   writeLines(opt$label_state, file.path(opt$outdir, "label_state.txt"))
 }
@@ -158,8 +154,7 @@ fwrite(
 style <- read_label_style(opt$label_colours)
 untyped <- split_arg(opt$untyped)
 
-## Cell types on the UMAP: the display label, low-confidence labels
-## slashed, immune cells drawn last ##
+## Display labels on the UMAP, low-confidence ones slashed, immune cells last ##
 um <- tryCatch(
   getDimReduction(
     merged,
@@ -189,8 +184,7 @@ if (is.null(um)) {
   save_fig(p, file.path(opt$outdir, "umap_cell_type.png"), 10, 7.5)
 }
 
-## Dotplot: the three panel markers most specific to each label, i.e. highest detection in
-## the label minus the highest detection in any other label ##
+## Dotplot of each label's three markers most ahead of other labels in detection ##
 if (nzchar(opt$markers) && file.exists(opt$markers)) {
   expr <- getExpression(merged, values = "normalized", output = "matrix")
   genes <- intersect(unique(read.csv(opt$markers)$gene), rownames(expr))

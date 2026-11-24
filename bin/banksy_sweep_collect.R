@@ -1,12 +1,11 @@
 #!/usr/bin/env Rscript
-## Scores every niche labelling of the BANKSY sweep, per biopsy, and draws them on the tissue.
-## ari_vs_fov: agreement of niches with FOVs (1 = the niches are the FOVs, 0 = unrelated).
-## fovs_one_niche: FOVs with at least 90% of their cells in one niche.
-## celltype_fov_overlap: per typed cell type, how alike its niche mix is in each FOV and in the
-## whole biopsy (1 = the same everywhere, 0 = FOV-specific niches).
-## ari_vs_celltype: agreement of niches with cell types among typed cells (high = cell typing).
-## coherence: share of each cell's nearest spatial neighbours in its niche (high = patches).
-## focal_*: the niche holding the most cells of the focal cell type ##
+## Scores every niche labelling of the BANKSY sweep per biopsy, and maps them ##
+##   ari_vs_fov            agreement of niches with FOVs, 1 when they are the FOVs ##
+##   fovs_one_niche        FOVs with at least 90% of their cells in one niche ##
+##   celltype_fov_overlap  overlap of each cell type's niche mix in a FOV with the whole biopsy ##
+##   ari_vs_celltype       agreement of niches with cell types among typed cells ##
+##   coherence             share of each cell's k_coherence nearest neighbours in its niche ##
+##   focal_*               the niche holding the most cells of the focal cell type ##
 a <- commandArgs(trailingOnly = TRUE)
 arg <- function(k, d = "") {
   i <- which(a == paste0("--", k))

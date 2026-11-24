@@ -1,7 +1,5 @@
 #!/usr/bin/env Rscript
-## Immune cells per mm2 of tissue and as a share of all cells, for each sample. Tissue area
-## counts the bin_um squares that hold at least one cell centre: gaps narrower than a square
-## count as tissue, the empty margins of a FOV do not ##
+## Immune cells per mm2 of tissue and as a share of all cells, per sample ##
 a <- commandArgs(trailingOnly = TRUE)
 arg <- function(k, d = "") {
   i <- which(a == paste0("--", k))
@@ -32,6 +30,7 @@ stopifnot(length(immune) > 0, opt$um_per_px > 0, opt$bin_um > 0)
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -90,8 +89,7 @@ message(
 )
 fwrite(res, file.path(opt$outdir, "immune_density.csv"))
 
-## Sample facts come from the samplesheet, as in composition.R. A person's samples are joined
-## by a line; a sample without a partner (e.g. a control) is a grey point ##
+## Each sample's group, level and subject from the samplesheet, as in composition.R ##
 ss <- fread(opt$samplesheet, colClasses = "character")
 within <- split_arg(opt$compare_within)
 miss <- setdiff(c("sample_id", opt$compare_by, within), names(ss))

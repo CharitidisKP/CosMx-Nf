@@ -10,11 +10,13 @@ opt <- list(
   python = arg("python", Sys.getenv("RETICULATE_PYTHON")),
   celltype_column = arg("celltype_column", "cell_type"),
   sample_col = arg("sample_col", "sample_id"),
-  k = as.integer(arg("k", "30"))
+  k = as.integer(arg("k", "30")),
+  seed = as.integer(arg("seed", "42"))
 )
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -51,6 +53,7 @@ conditionon <- data.frame(
   negmean = m$neg_mean,
   row.names = ids
 )
+set.seed(opt$seed)
 res <- insitucor(
   counts = counts,
   conditionon = conditionon,

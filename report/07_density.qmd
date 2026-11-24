@@ -1,0 +1,66 @@
+---
+title: "07 - Immune density"
+subtitle: "Immune cells per area of tissue"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+dn_f <- find_tab("^immune_density\\.csv$")
+dn <- read_files(dn_f)
+## Bars per sample and immune cell type of one measure ##
+density_fig <- function(name, col, xlab) {
+  rfig(name, c(dn_f, RUN$label_colours), function() {
+    d <- copy(dn)[, sample_id := factor(sample_id, rev(sample_levels(sample_id)))]
+    ggplot(d, aes(.data[[col]], sample_id, fill = as.character(cell_type))) +
+      geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+      scale_cells(as.character(d$cell_type), name = NULL, guide = guide_legend(ncol = 1)) +
+      scale_x_continuous(expand = expansion(c(0, 0.04))) +
+      labs(x = xlab, y = NULL) +
+      theme_report()
+  }, 8, 1.4 + 0.22 * nrow(dn))
+}
+```
+
+Immune cells are counted per mm2 of tissue and as a share of all cells that passed QC. Tissue area counts the squares of `density_bin_um` microns that hold at least one cell centre.
+
+```{r}
+page_top(
+  stages = "spatial",
+  Input = "The annotate object, its <code>celltype_column</code> and the <code>immune_types</code>.",
+  Method = "Cell positions in microns with <code>um_per_px</code>, tissue area from occupied squares of <code>density_bin_um</code> microns.",
+  Output = "The tables in <code>tables/07_spatial/density</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Per mm2 of tissue" = function() {
+    if (is.null(dn)) return(missing_note("No densities yet."))
+    rgallery(list(`Immune cells per mm2 of tissue` = density_fig("density_per_mm2", "per_mm2", "Cells per mm2")), wide = TRUE)
+  },
+  "Share of all cells" = function() {
+    if (is.null(dn)) return(missing_note("No densities yet."))
+    rgallery(list(`Immune cells as a share of all cells` = density_fig("density_pct", "pct_of_all", "Share of all cells (%)")), wide = TRUE)
+  },
+  "Tissue area" = function() {
+    if (is.null(dn) || !"tissue_mm2" %in% names(dn)) return(missing_note("No tissue areas yet."))
+    fig <- rfig("tissue_area", dn_f, function() {
+      d <- unique(dn[, .(sample_id, tissue_mm2)])[, sample_id := factor(sample_id, rev(sample_levels(sample_id)))]
+      ggplot(d, aes(tissue_mm2, sample_id)) +
+        geom_col(fill = TEAL, width = 0.7) +
+        geom_text(aes(label = sprintf("%.2f", tissue_mm2)), hjust = -0.2, size = 2.8, colour = "grey30") +
+        scale_x_continuous(expand = expansion(c(0, 0.15))) +
+        labs(x = "Tissue area (mm2)", y = NULL) +
+        theme_report()
+    }, 6.5, 1.2 + 0.3 * length(unique(dn$sample_id)))
+    tagList(
+      rgallery(list(`Tissue area per sample` = fig), wide = TRUE),
+      hits_table(dn, csv = dn_f, page = 50)
+    )
+  },
+  ".pipeline" = function() pipeline_figures(figs("07_spatial/density", "\\.png$", FALSE)),
+  "Parameters" = function() params_table(c("immune_types", "um_per_px", "density_bin_um"), "spatial")
+)))
+```

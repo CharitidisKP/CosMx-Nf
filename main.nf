@@ -4,6 +4,7 @@ include { DISCOVERY }   from './subworkflows/discovery'
 include { ANNOTATION; SPATIAL; DE; banksy_settings; banksy_key } from './subworkflows/annotation'
 include { CCI }         from './subworkflows/cci'
 include { DIAGNOSTICS } from './modules/diagnostics'
+include { CLUSTER_CHECKS } from './modules/cluster_checks'
 include { SUPERVISED; ATTACH_SUPERVISED } from './modules/insitutype_supervised'
 include { SUBCLUSTER }  from './modules/subcluster'
 include { REPORT }      from './modules/report'
@@ -12,7 +13,13 @@ include { BANKSY_PREP as BANKSY_SWEEP_PREP; BANKSY_SAMPLE as BANKSY_SWEEP } from
 include { BANKSY_SWEEP_COLLECT } from './modules/banksy_sweep'
 include { isIncluded }  from './subworkflows/samplesheet'
 
-// Short commit of the pipeline checkout, recorded in run_report.md
+// The HTML report's sources and the files its pages read, for REPORT
+def report_site() {
+    [file("${projectDir}/report"), file("${projectDir}/nextflow.config"), file("${projectDir}/assets/no_label_overrides.csv"),
+     file("${projectDir}/bin/cosmx_figures.R"), file(params.label_colours)]
+}
+
+// Short commit of the pipeline checkout, shown in the HTML report
 def git_commit() {
     try {
         return "git -C ${projectDir} rev-parse --short HEAD".execute().text.trim() ?: "unknown"
@@ -21,7 +28,17 @@ def git_commit() {
     }
 }
 
+// Stops on an unknown hvg_method, or on hvg_method file without a readable hvg_file
+def check_hvg() {
+    def methods = ['variance', 'variance_batch', 'all', 'file']
+    if (!(params.hvg_method in methods))
+        error "--hvg_method must be one of: ${methods.join(', ')}"
+    if (params.hvg_method == 'file' && !(params.hvg_file && file(params.hvg_file).exists()))
+        error "--hvg_method file needs --hvg_file, a gene list with one gene per line"
+}
+
 workflow discover {
+    check_hvg()
     def sheet_ids = file(params.input).splitCsv(header: true).findAll { isIncluded(it) }.collect { it.sample_id }
     def solo_ids  = !params.solo ? [] :
         (params.solo.toString().trim() == 'all' ? sheet_ids
@@ -32,8 +49,12 @@ workflow discover {
     if (params.solo_only && !solo_ids)
         error "--solo_only requires --solo <sample_id[,sample_id,...]>"
 
+    // Drops an earlier run's pick when this run clusters without the stability check
+    def stability = params.checks.toString().toBoolean() && params.checks_stability.toString().toBoolean()
+    if (!params.solo_only && !stability && pick_file().exists()) pick_file().delete()
+
     DISCOVERY( file(params.input), solo_ids )
-    REPORT( params.stage, git_commit(), DISCOVERY.out.tables.collect().ifEmpty([]), file(params.input) )
+    REPORT( params.stage, git_commit(), DISCOVERY.out.tables.collect().ifEmpty([]), file(params.input), report_site() )
 }
 
 // Each stage picks up where the last one published, so they chain without flags.
@@ -41,16 +62,23 @@ def stage_obj(stage) {
     params.merged_giotto ?: "${params.outdir}/objects/${stage}/giotto"
 }
 
-// The run's curated labels, beside its results: cluster_labels.<basis>.csv for each clustering
-// labelled, label_overrides.csv with the per-cell edits, and cluster_basis.txt naming the
-// clustering cell_type comes from. The Shiny app writes the same files
+// The stability check's pick, published with its tables
+def pick_file() {
+    file("${params.outdir}/tables/03_clustering/checks/picked_resolution.txt")
+}
+
+// The clustering the stability check picked, or null before it has run
+def picked_basis() {
+    def f = pick_file()
+    f.exists() ? (f.text.trim() ?: null) : null
+}
+
+// The run's labels folder, labels_dir or else labels/ beside the results folder
 def labels_dir() {
     file(params.labels_dir ?: "${params.outdir}/../labels").normalize()
 }
 
-// What annotate applies: the clustering, its cluster labels and the per-cell edits, each read
-// from labels_dir unless a param names it, and a digest of the three. A stage compares the
-// digest with the one its input object was built from
+// The basis, cluster labels and per-cell edits annotate applies, and their digest
 def label_state() {
     def dir = labels_dir()
     def basis = params.cluster_basis ? params.cluster_basis.toString() : null
@@ -84,8 +112,7 @@ def built_from(stage) {
     f.exists() ? f.text.trim() : null
 }
 
-// The clustering object annotate reads: subcluster columns live on the subcluster object,
-// Leiden columns on the discover one
+// The object annotate reads, subcluster for a sub_* basis, else discover
 def clustering_obj(basis) {
     def mg = stage_obj(basis.startsWith('sub_') ? 'subcluster' : 'discover')
     if (!file(mg).exists())
@@ -98,11 +125,10 @@ workflow annotate {
     def st = label_state()
     log.info "annotate: ${st.basis}, labels ${st.labels}, edits ${st.overrides}"
     ANNOTATION( clustering_obj(st.basis), st )
-    REPORT( params.stage, git_commit(), ANNOTATION.out.tables.collect().ifEmpty([]), file(params.input) )
+    REPORT( params.stage, git_commit(), ANNOTATION.out.tables.collect().ifEmpty([]), file(params.input), report_site() )
 }
 
-// The labelled object for a later stage. The published one when it was built from the current
-// labels; otherwise annotate runs first, in this launch. --merged_giotto is taken as it is
+// The labelled object, rebuilt by annotate first when the labels changed
 workflow LABELLED {
     main:
         def st = label_state()
@@ -131,8 +157,7 @@ workflow LABELLED {
         digest = Channel.value(st.digest)
 }
 
-// The spatial object for cci and de, rebuilt in this launch when it is behind the labels or the
-// BANKSY settings, with annotate first when that is behind the labels too
+// The spatial object, rebuilt first when the labels or BANKSY settings changed
 workflow SPATIAL_OBJECT {
     main:
         def st = label_state()
@@ -166,7 +191,7 @@ workflow spatial {
     LABELLED()
     SPATIAL( LABELLED.out.obj, LABELLED.out.digest )
     REPORT( params.stage, git_commit(),
-            LABELLED.out.tables.mix(SPATIAL.out.tables).collect().ifEmpty([]), file(params.input) )
+            LABELLED.out.tables.mix(SPATIAL.out.tables).collect().ifEmpty([]), file(params.input), report_site() )
 }
 
 // Ligand-receptor and spatial-correlation methods, on the BANKSY object.
@@ -184,21 +209,18 @@ workflow cci {
     SPATIAL_OBJECT()
     CCI( SPATIAL_OBJECT.out.obj )
     REPORT( params.stage, git_commit(),
-            SPATIAL_OBJECT.out.tables.mix(CCI.out.tables).collect().ifEmpty([]), file(params.input) )
+            SPATIAL_OBJECT.out.tables.mix(CCI.out.tables).collect().ifEmpty([]), file(params.input), report_site() )
 }
 
-// smiDE, fanned out over sample x cell type, and pseudobulk DE across samples. The cell types
-// come from smide_celltypes, or else from cell_type itself
+// Runs smiDE per sample and cell type, and pseudobulk DE across samples
 workflow de {
     SPATIAL_OBJECT()
     DE( SPATIAL_OBJECT.out.obj, SPATIAL_OBJECT.out.counts )
     REPORT( params.stage, git_commit(),
-            SPATIAL_OBJECT.out.tables.mix(DE.out.tables).collect().ifEmpty([]), file(params.input) )
+            SPATIAL_OBJECT.out.tables.mix(DE.out.tables).collect().ifEmpty([]), file(params.input), report_site() )
 }
 
-// BANKSY per biopsy over every settings set in banksy_variants, on the spatial object, by the
-// same script the spatial stage runs. Publishes beside the spatial stage's BANKSY outputs and
-// changes no object.
+// Runs BANKSY per biopsy with every row of banksy_variants, changing no object
 workflow banksy_sweep {
     SPATIAL_OBJECT()
     BANKSY_SWEEP_PREP( SPATIAL_OBJECT.out.obj.map { _id, obj -> obj }, params.banksy_sweep_samples )
@@ -212,36 +234,51 @@ workflow banksy_sweep {
                           BANKSY_SWEEP_PREP.out.meta.collect() )
 }
 
-// Optional pass between discover and annotate. Publishes to objects/subcluster, leaving the
-// discover object alone. Annotate picks it up for any sub_* basis.
+// Optional pass between discover and annotate, published to objects/subcluster
 workflow subcluster {
-    if (!params.subcluster_basis)
-        error "subcluster requires --subcluster_basis <cluster column, e.g. leiden_clus_res0.3>"
-    // Build on the previous subcluster object when there is one, so a second resolution
-    // appends its column instead of starting from discover again.
+    // The named basis, else the resolution the stability check picked
+    def basis = params.subcluster_basis ? params.subcluster_basis.toString() : picked_basis()
+    if (!basis)
+        error "subcluster requires --subcluster_basis <cluster column, e.g. leiden_clus_res0.3>, " +
+              "or a resolution picked by the stability check (cosmx-nf <run_id> checks)"
+    // Builds on the last subcluster object when there is one, else on discover
     def prev = file("${params.outdir}/objects/subcluster/giotto")
     def mg = params.merged_giotto ?: (prev.exists() ? prev : "${params.outdir}/objects/discover/giotto")
     if (!file(mg).exists())
         error "subcluster: no Giotto object at ${mg}. Pass --merged_giotto <dir> (a saveGiotto folder)."
 
     def which = params.subcluster_clusters ?: 'every cluster'
-    log.info "subcluster: ${mg} -> ${params.subcluster_basis}, ${which}, resolution ${params.subcluster_res}"
+    def from = params.subcluster_basis ? '' : " (the stability check's pick)"
+    log.info "subcluster: ${mg} -> ${basis}${from}, ${which}, resolution ${params.subcluster_res}"
 
-    SUBCLUSTER( Channel.value(tuple('merged', file(mg))) )
+    SUBCLUSTER( channel.value(tuple('merged', file(mg), basis)) )
 
     // Same triage discover produces, so subclusters arrive with a label template
     DIAGNOSTICS( SUBCLUSTER.out.obj
                    .combine(SUBCLUSTER.out.col.map { f -> f.text.trim() }) )
     REPORT( params.stage, git_commit(),
-            SUBCLUSTER.out.tables.mix(DIAGNOSTICS.out.tables).collect().ifEmpty([]), file(params.input) )
+            SUBCLUSTER.out.tables.mix(DIAGNOSTICS.out.tables).collect().ifEmpty([]), file(params.input), report_site() )
 }
 
-// Runs DIAGNOSTICS against an object that already exists, without re-running
-// INTEGRATE/CLUSTER/INSITUTYPE and without republishing an object.
+// Runs the discovery checks on the discover object, without republishing it
+workflow checks {
+    check_hvg()
+    def mg = stage_obj('discover')
+    if (!file(mg).exists())
+        error "checks: no Giotto object at ${mg}. Pass --merged_giotto <dir> (it must be a saveGiotto folder)."
+    log.info "checks: ${mg}"
+
+    CLUSTER_CHECKS( channel.value(tuple('merged', file(mg), '')) )
+    REPORT( params.stage, git_commit(), CLUSTER_CHECKS.out.tables.collect().ifEmpty([]), file(params.input), report_site() )
+}
+
+// Runs DIAGNOSTICS on an existing object, without republishing it
 workflow diagnose {
+    // The named columns, else the chosen resolutions, the stability check's pick and unsupervised InSituType
     def cols = params.diag_columns
         ? params.diag_columns.toString().split(',').collect { it.trim() }.findAll { it }
-        : params.chosen_resolutions.toString().split(',').collect { "leiden_clus_res${it.trim()}" } + ['insitutype_unsup']
+        : (params.chosen_resolutions.toString().split(',').collect { r -> "leiden_clus_res${r.trim()}".toString() } +
+           [picked_basis(), 'insitutype_unsup']).findAll { it }.unique()
     if (!cols) error "diagnose: --diag_columns resolved to nothing."
     // Subcluster columns live on the subcluster object, which also carries every discover column
     def mg = stage_obj(cols.any { it.startsWith('sub_') } ? 'subcluster' : 'discover')
@@ -250,11 +287,10 @@ workflow diagnose {
     log.info "diagnose: ${mg} -> columns ${cols.join(', ')}"
 
     DIAGNOSTICS( Channel.value(tuple('merged', file(mg))).combine(Channel.fromList(cols)) )
-    REPORT( params.stage, git_commit(), DIAGNOSTICS.out.tables.collect().ifEmpty([]), file(params.input) )
+    REPORT( params.stage, git_commit(), DIAGNOSTICS.out.tables.collect().ifEmpty([]), file(params.input), report_site() )
 }
 
-// Runs the supervised passes and their diagnostics against an object that already exists,
-// without re-running LOAD/QC/MERGE/INTEGRATE/CLUSTER/INSITUTYPE.
+// Runs the supervised passes and their diagnostics on the discover object
 workflow supervised {
     def mg = stage_obj('discover')
     if (!file(mg).exists())
@@ -291,17 +327,17 @@ workflow supervised {
         DIAGNOSTICS( ATTACH_SUPERVISED.out.obj.combine(Channel.fromList(cols)) )
         ch_tables = ch_tables.mix(DIAGNOSTICS.out.tables)
     }
-    REPORT( params.stage, git_commit(), ch_tables.collect().ifEmpty([]), file(params.input) )
+    REPORT( params.stage, git_commit(), ch_tables.collect().ifEmpty([]), file(params.input), report_site() )
 }
 
-// Rebuilds run_report.md from what is already published, e.g. after a failed stage
+// Rebuilds the HTML report from what is already published
 workflow rebuild_report {
-    REPORT( params.stage, git_commit(), Channel.value([]), file(params.input) )
+    REPORT( params.stage, git_commit(), Channel.value([]), file(params.input), report_site() )
 }
 
 workflow {
-    // A mistyped stage would otherwise fall through to discover and replace its outputs
-    def stages = ['discover', 'subcluster', 'diagnose', 'supervised', 'annotate', 'spatial', 'cci', 'de',
+    // Stops on a mistyped stage
+    def stages = ['discover', 'subcluster', 'checks', 'diagnose', 'supervised', 'annotate', 'spatial', 'cci', 'de',
                   'banksy_sweep', 'report']
     if (!(params.stage in stages)) error "--stage must be one of: ${stages.join(', ')}"
 
@@ -319,6 +355,7 @@ workflow {
     else if (params.stage == 'cci')        cci()
     else if (params.stage == 'de')         de()
     else if (params.stage == 'subcluster') subcluster()
+    else if (params.stage == 'checks')     checks()
     else if (params.stage == 'diagnose')   diagnose()
     else if (params.stage == 'supervised') supervised()
     else if (params.stage == 'banksy_sweep') banksy_sweep()

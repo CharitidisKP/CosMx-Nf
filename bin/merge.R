@@ -13,6 +13,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({

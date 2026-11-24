@@ -12,6 +12,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -26,8 +27,7 @@ if (!length(files)) {
   stop("attach_supervised.R: no insitutype_sup_*_cells.csv staged")
 }
 
-## Profile <name> adds insitutype_sup_<name> for the call and
-## insitutype_sup_<name>_<column> for every other per-cell column ##
+## Adds each profile's call as insitutype_sup_<name>, other columns with a suffix ##
 for (f in files) {
   nm <- sub("^insitutype_sup_(.*)_cells\\.csv$", "\\1", basename(f))
   d <- read.csv(f, stringsAsFactors = FALSE)

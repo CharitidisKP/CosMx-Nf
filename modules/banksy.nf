@@ -1,4 +1,4 @@
-// Load the object once: pooled variable genes, and per sample its counts and cells.
+// Writes the pooled variable genes and each sample's counts and cells
 // samples: the samples to write, blank for every one
 process BANKSY_PREP {
     tag   'prep'
@@ -21,9 +21,7 @@ process BANKSY_PREP {
     """
 }
 
-// One sample through BANKSY with one settings set, v, a row of banksy_variants. The spatial
-// stage runs it with the row banksy_settings names, at the pipeline's lambdas and resolution.
-// The sweep runs it as BANKSY_SWEEP with every row; conf/base.config sets what differs there
+// Runs BANKSY on one sample with settings set v, a row of banksy_variants
 process BANKSY_SAMPLE {
     tag   "${sample}"
     label 'process_sweep'
@@ -56,8 +54,7 @@ process BANKSY {
     label 'process_spatial'
     publishDir path: { "${params.outdir}/figures/07_spatial/banksy" }, mode: 'copy', pattern: "*.{png,pdf,jpg}"
     publishDir path: { "${params.outdir}/tables/07_spatial/banksy" }, mode: 'copy', pattern: "*.csv"
-    // Carries the BANKSY domains; --stage cci and --stage de read this one, with the label
-    // state it was built from beside it
+    // The object with BANKSY domains and its label state, read by cci and de
     publishDir path: { "${params.outdir}/objects/spatial" }, mode: 'copy', pattern: "{giotto,label_state.txt}"
 
     input:

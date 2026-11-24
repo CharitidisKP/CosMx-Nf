@@ -1,0 +1,175 @@
+---
+title: "06 - Annotation"
+subtitle: "The curated labels on the cells"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+ls_f <- find_tab("^label_source\\.csv$")
+lsrc <- read_files(ls_f)
+basis <- if (!is.null(lsrc) && "cluster_basis" %in% names(lsrc)) lsrc$cluster_basis[1] else labels_basis() %||% ""
+ct_f <- find_tab("^cell_type_counts\\.csv$")
+cb_f <- find_tab("^composition_by_sample\\.csv$")
+pc_f <- find_tab("^composition_paired_change\\.csv$")
+tst_f <- find_tab("^composition_test\\.csv$")
+ac_f <- find_tab("^annotation_comparison\\.csv$")
+```
+
+The annotate stage joins the curated cluster labels onto their clustering, applies the per-cell edits, and groups the labels into immune and non-immune cells. Its tables count the cell types and how they change between samples.
+
+```{r}
+page_top(
+  stages = "annotate",
+  Input = "The run's labels folder: <code>cluster_labels.&lt;clustering&gt;.csv</code> for the clustering <code>cluster_basis.txt</code> names, and <code>label_overrides.csv</code> for per-cell edits.",
+  Method = "Each cell takes its cluster's label, then its per-cell edit. Low-confidence edits change the figures only. <code>cell_type_l1</code> groups the labels by <code>immune_types</code>.",
+  Output = "The <code>cell_type</code> and <code>cell_type_l1</code> columns on the annotate object, the app bundle in <code>local_export/</code>, and the tables in <code>tables/06_annotation</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Labels" = function() {
+    st <- labels_state()
+    tagList(
+      tags$p(badge(st), " ", st$text),
+      if (!is.null(lsrc)) {
+        r <- lsrc[1]
+        g <- function(k) if (k %in% names(r)) as.character(r[[k]]) else ""
+        plain_table(data.table(
+          Setting = c("Clustering", "Labels file", "Per-cell edits file", "Per-cell edit rows", "Cells relabelled", "Low-confidence cells"),
+          Value = c(g("cluster_basis"), basename(g("labels")), basename(g("overrides")), g("override_rows"), g("relabelled"), g("low_confidence"))
+        ))
+      },
+      csv_links(ls_f),
+      if (nzchar(basis)) {
+        tagList(
+          tags$p(tags$b("Cluster labels")),
+          tab(paste0("^cluster_labels\\.", rx(basis), "\\.csv$"), colClasses = list(character = 1), page = 50)
+        )
+      }
+    )
+  },
+  "Cell types" = function() {
+    ct <- read_files(ct_f)
+    bars <- if (!is.null(ct)) {
+      rfig("cell_type_counts", c(ct_f, RUN$label_colours), function() {
+        d <- copy(ct)[order(n_cells)]
+        d[, cell_type := factor(cell_type, cell_type)]
+        ggplot(d, aes(n_cells, cell_type, fill = as.character(cell_type))) +
+          geom_col(width = 0.75, show.legend = FALSE) +
+          geom_text(aes(label = fmt_n(n_cells)), hjust = -0.15, size = 2.8, colour = "grey30") +
+          scale_cells(as.character(d$cell_type)) +
+          scale_x_continuous(labels = scales::label_comma(), expand = expansion(c(0, 0.15))) +
+          scale_y_discrete(labels = function(x) display_name(x, STYLE)) +
+          labs(x = "Cells", y = NULL) +
+          theme_report()
+      }, 7, 1.2 + 0.28 * nrow(ct))
+    }
+    umap <- umap_cells_fig("umap_cell_type", "cell_type")
+    tagList(
+      rgallery(list(`Cells per cell type` = bars), wide = TRUE),
+      if (length(umap)) rgallery(list(`Cell types on the UMAP` = umap), big = TRUE) else gallery_named("06_annotation", c("umap_cell_type.png" = "Cell types on the UMAP"), wide = TRUE),
+      hits_table(ct, csv = ct_f, order = "-n_cells"),
+      tags$p(tags$b("As the figures show them")),
+      tab("^cell_type_display_counts\\.csv$", page = 50, order = "-n_cells", note = "The figures' names and the confidence of each label.")
+    )
+  },
+  "Composition" = function() {
+    cb <- read_files(cb_f)
+    if (is.null(cb)) return(missing_note("No composition tables yet."))
+    share <- rfig("composition_by_sample", c(cb_f, RUN$label_colours), function() {
+      d <- copy(cb)[, sample_id := factor(sample_id, rev(sample_levels(sample_id)))]
+      d[, cell_type := factor(cell_type, rev(label_levels(cell_type, STYLE)))]
+      ggplot(d, aes(share_of_all, sample_id, fill = as.character(cell_type))) +
+        geom_col(width = 0.8, position = position_stack(reverse = TRUE)) +
+        scale_cells(as.character(d$cell_type), name = NULL, guide = guide_legend(ncol = 1)) +
+        scale_x_continuous(labels = scales::label_percent(), expand = expansion(c(0, 0.01))) +
+        labs(x = "Share of the sample's cells", y = NULL) +
+        theme_report()
+    }, 9, 1.4 + 0.42 * length(unique(cb$sample_id)))
+    pc <- read_files(pc_f)
+    paired <- if (!is.null(pc)) {
+      rfig("composition_paired_change", c(pc_f, RUN$label_colours), function() {
+        d <- copy(pc)
+        d[, cell_type := factor(cell_type, rev(label_levels(cell_type, STYLE)))]
+        subj <- unique(as.character(d$subject))
+        ggplot(d, aes(log2_change, cell_type, colour = as.character(subject))) +
+          geom_vline(xintercept = 0, colour = "grey70") +
+          geom_point(size = 2.4, alpha = 0.9) +
+          scale_colour_manual(values = stats::setNames(rep(SUBJECT_COLOURS, length.out = length(subj)), subj), name = "Subject") +
+          scale_y_discrete(labels = function(x) display_name(x, STYLE)) +
+          facet_wrap(~comparison) +
+          labs(x = "log2 change in the share of typed cells", y = NULL) +
+          theme_report()
+      }, 8, 1.6 + 0.26 * length(unique(pc$cell_type)))
+    }
+    tst <- read_files(tst_f)
+    test <- if (!is.null(tst) && all(c("cell_type", "log2FC") %in% names(tst))) {
+      rfig("composition_test", c(tst_f, RUN$label_colours), function() {
+        d <- copy(tst)[order(log2FC)]
+        pcol <- intersect(names(d), names(d)[is_p_col(names(d))])[1]
+        d[, cell_type := factor(cell_type, cell_type)]
+        g <- ggplot(d, aes(log2FC, cell_type, fill = as.character(cell_type))) +
+          geom_col(width = 0.75, show.legend = FALSE) +
+          geom_vline(xintercept = 0, colour = "grey60") +
+          scale_cells(as.character(d$cell_type)) +
+          scale_y_discrete(labels = function(x) display_name(x, STYLE)) +
+          labs(x = "log2 fold change in the share between groups", y = NULL) +
+          theme_report()
+        if (!is.na(pcol)) g <- g + geom_text(aes(label = paste0("p ", signif(.data[[pcol]], 2)), x = log2FC + sign(log2FC) * 0.05, hjust = ifelse(log2FC > 0, 0, 1)), size = 2.6, colour = "grey30")
+        g
+      }, 7.5, 1.4 + 0.28 * nrow(tst))
+    }
+    untyped <- if (length(RUN$untyped) && all(c("sample_id", "cell_type", "share_of_all") %in% names(cb))) {
+      u <- cb[cell_type %in% RUN$untyped, .(untyped_pct = round(100 * sum(share_of_all), 1)), by = sample_id]
+      if (nrow(u)) tags$p(sprintf("Cells without a cell identity (%s) per sample: %s.", paste(RUN$untyped, collapse = ", "),
+                                  paste0(u$sample_id, " ", u$untyped_pct, "%", collapse = ", ")))
+    }
+    tagList(
+      rgallery(list(`Cell types per sample` = share), big = TRUE),
+      untyped,
+      hits_table(cb, csv = cb_f, note = "share_of_typed leaves out the cells without a cell identity."),
+      tags$p(tags$b("Paired change")),
+      rgallery(list(`Each subject's change in each cell type's share against its baseline sample` = paired), wide = TRUE),
+      tab("^composition_paired_change\\.csv$"),
+      tags$p(tags$b("Between groups")),
+      rgallery(list(`Each cell type's share between the treatment groups` = test), wide = TRUE),
+      tab("^composition_test\\.csv$")
+    )
+  },
+  "Agreement with the automatic calls" = function() {
+    ac <- read_files(ac_f)
+    if (is.null(ac) || !"manual" %in% names(ac)) return(missing_note("No comparison with the automatic calls yet."))
+    calls <- setdiff(names(ac), c("manual", "n", "pct", "merged_label"))
+    items <- lapply(calls, function(cc) {
+      rfig(paste0("agreement_", cc), c(ac_f, RUN$label_colours), function() {
+        d <- ac[, .(n = sum(n)), by = c("manual", cc)]
+        setnames(d, cc, "call")
+        top <- d[, .(n = sum(n)), by = call][order(-n)][seq_len(min(.N, 25)), call]
+        d <- d[call %in% top]
+        d[, share := n / sum(n), by = manual]
+        d[, manual := factor(manual, rev(label_levels(manual, STYLE)))]
+        d[, call := factor(call, top)]
+        heat_plot(d, "call", "manual", "share", name = "Share of the\nlabel's cells") +
+          scale_y_discrete(labels = function(x) display_name(x, STYLE))
+      }, heat_size(25, length(unique(ac$manual)))[["w"]], heat_size(25, length(unique(ac$manual)))[["h"]])
+    })
+    tagList(
+      rpicker(stats::setNames(items, paste("Curated labels against", calls))),
+      tab("^annotation_comparison\\.csv$", order = "-n", note = "Each combination of the curated label and the automatic calls, with its cell count.")
+    )
+  },
+  "Marker dot plot" = function() {
+    gallery_named("06_annotation", c("marker_dotplot.png" = "The marker panel per cell type"), big = TRUE, empty = "No dot plot yet.")
+  },
+  "Per-cell edits" = function() {
+    tab("^label_overrides_applied\\.csv$", note = "Cells whose label the per-cell edits changed, by confidence.")
+  },
+  ".pipeline" = function() pipeline_figures(figs("06_annotation", "\\.png$", FALSE)),
+  "Parameters" = function() {
+    params_table(c("cluster_basis", "celltype_column", "untyped_celltypes", "immune_types", "fig_format", "bundle"), "annotate")
+  }
+)))
+```

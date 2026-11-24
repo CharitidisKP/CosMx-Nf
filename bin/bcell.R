@@ -27,6 +27,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -69,8 +70,7 @@ if (length(b_ids) < opt$min_cells) {
   quit(save = "no", status = 0)
 }
 
-## Own HVGs and PCA, as subcluster.R does per cluster. The global embedding is
-## shaped by the abundant types, not by what varies inside this lineage ##
+## A PCA of the B-lineage cells on their own HVGs plus the markers ##
 gb <- subsetGiotto(merged, cell_ids = b_ids)
 nm <- getExpression(
   gb,

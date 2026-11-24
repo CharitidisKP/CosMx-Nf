@@ -1,7 +1,5 @@
 #!/usr/bin/env Rscript
-## One biopsy through BANKSY with one settings set, a row of assets/banksy_variants.csv, at every
-## lambda and resolution of that set. The spatial stage runs it with the pipeline's row, the sweep
-## with every row. Writes one niche column per (lambda, resolution), and the genes it used ##
+## Runs BANKSY on one biopsy with one row of assets/banksy_variants.csv ##
 a <- commandArgs(trailingOnly = TRUE)
 arg <- function(k, d = "") {
   i <- which(a == paste0("--", k))
@@ -29,7 +27,7 @@ opt <- list(
   seed = as.integer(arg("seed", "42")),
   outdir = arg("outdir", ".")
 )
-## Lists in the sweep table are separated by ; (commas belong to the CSV) ##
+## Splits lists on semicolons, as the sweep table writes them, or on commas ##
 split_arg <- function(s) {
   v <- trimws(strsplit(s, "[;,]")[[1]])
   v[nzchar(v)]
@@ -64,8 +62,7 @@ meta <- fread(opt$meta, colClasses = list(character = c("cell_ID", "fov")))
 stopifnot(identical(colnames(raw), meta$cell_ID))
 hvg <- intersect(readLines(opt$hvg), rownames(raw))
 
-## Genes: all, the pooled variable genes, or those of them whose best cell type reaches bg_mult
-## times the biopsy's background (mean count per negative probe per cell) ##
+## Genes: all, hvg, or hvg_bg, the hvg at bg_mult times background in their top type ##
 genes <- switch(
   opt$genes,
   all = rownames(raw),
@@ -99,7 +96,7 @@ if (length(genes) < 50) {
   stop("banksy_sample.R: only ", length(genes), " genes for ", opt$sample, " with ", opt$variant)
 }
 message("banksy_sample.R: ", opt$sample, " ", length(genes), " genes")
-## The genes used, with their best cell type and its multiple of background when hvg_bg chose them ##
+## The genes used, with best cell type and multiple of background under hvg_bg ##
 gene_table <- data.table(
   sample = opt$sample,
   gene = genes,
@@ -107,9 +104,7 @@ gene_table <- data.table(
   x_background = if (opt$genes == "hvg_bg") unname(x_background) else NA_real_
 )
 
-## Values: counts over library size scaled to the mean library size without a log
-## (normalizeCounts(log = FALSE)), or log2 with the median library size or 6000 as scale factor.
-## The library size sums every gene ##
+## Scales counts to the mean library size, or to the median or 6000 then log2 ##
 ls <- pmax(Matrix::colSums(raw), 1)
 m <- raw[genes, , drop = FALSE]
 sf <- switch(
@@ -156,8 +151,7 @@ spe <- runBanksyPCA(
   seed = opt$seed
 )
 
-## Leiden at every resolution: BANKSY's own shared-neighbour graph (clusterBanksy), or the old
-## pipeline's unweighted k-nearest-neighbour graph with igraph (modularity) ##
+## Leiden at each resolution, with clusterBanksy or on an igraph kNN graph ##
 labels <- data.table(cell_ID = meta$cell_ID)
 col_of <- function(l, r) paste0(opt$variant, "_lam", l, "_res", r)
 for (l in lambdas) {

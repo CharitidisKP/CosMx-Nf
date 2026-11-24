@@ -1,0 +1,44 @@
+<script>
+// p-value columns get a threshold drop-down in their filter cell, and tables in a tab fit once it opens
+(function () {
+  window.cosmxP = window.cosmxP || {};
+  // The drop-down for each p column of a table, called by DT after the table is built
+  window.cosmxPFilter = function (table, cols) {
+    var $ = window.jQuery;
+    var node = table.table().node();
+    var th = window.cosmxP[node.id] = {};
+    var row = $(table.table().header()).find('tr:last td');
+    cols.forEach(function (c) {
+      var sel = $('<select class="table-filter" aria-label="p threshold">' +
+        '<option value="">All</option><option value="0.01">&lt; 0.01</option>' +
+        '<option value="0.05">&lt; 0.05</option><option value="0.1">&lt; 0.1</option></select>');
+      row.eq(c).empty().append(sel);
+      sel.on('change', function () {
+        th[c] = this.value ? Number(this.value) : null;
+        table.draw();
+      });
+    });
+  };
+  function ready() {
+    var $ = window.jQuery;
+    if (!$ || !$.fn || !$.fn.dataTable) return false;
+    // Rows whose p is not below a column's threshold are hidden
+    $.fn.dataTable.ext.search.push(function (settings, data) {
+      var th = window.cosmxP[settings.nTable.id];
+      if (!th) return true;
+      for (var c in th) {
+        var t = th[c];
+        if (t === null || t === undefined) continue;
+        var v = parseFloat(data[c]);
+        if (!(v < t)) return false;
+      }
+      return true;
+    });
+    document.addEventListener('shown.bs.tab', function () {
+      $.fn.dataTable.tables({ visible: true, api: true }).columns.adjust();
+    });
+    return true;
+  }
+  if (!ready()) document.addEventListener('DOMContentLoaded', ready);
+})();
+</script>

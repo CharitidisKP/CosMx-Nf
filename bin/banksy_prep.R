@@ -1,7 +1,5 @@
 #!/usr/bin/env Rscript
-## Inputs for banksy_sample.R, in the spatial stage and the sweep alike: the top variable genes
-## of each biopsy, pooled over all biopsies (Banksy multi-sample vignette), and per biopsy its raw
-## counts and cell metadata, cells in the object's order ##
+## Writes pooled variable genes and per-biopsy counts and cells for banksy_sample.R ##
 a <- commandArgs(trailingOnly = TRUE)
 arg <- function(k, d = "") {
   i <- which(a == paste0("--", k))
@@ -23,6 +21,7 @@ split_arg <- function(s) {
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -61,8 +60,7 @@ message("banksy_prep.R: ", length(hvg), " pooled variable genes")
 rm(norm)
 invisible(gc())
 
-## Per biopsy: raw counts of every gene, and position, FOV, cell type, background and the
-## stored per-biopsy niches ##
+## Each biopsy's counts and its cells' position, FOV, type, background and niches ##
 raw <- getExpression(merged, values = "raw", output = "matrix")
 locs <- getSpatialLocations(merged, output = "data.table")
 stored <- intersect(c("niche_sample_lam0.2", "niche_sample_lam0.8"), names(pd))

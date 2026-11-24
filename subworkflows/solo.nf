@@ -4,9 +4,7 @@ include { HIERATYPE   as SOLO_HIERATYPE   } from '../modules/hieratype'
 include { INSITUTYPE  as SOLO_INSITUTYPE  } from '../modules/insitutype'
 include { DIAGNOSTICS as SOLO_DIAGNOSTICS } from '../modules/diagnostics'
 
-// Single-sample discovery: the merged modules, aliased, fed one QC'd object at a time.
-// No MERGE, and no Harmony -- one sample has a single batch level, so integrate.R falls
-// back to PCA and hands the reduction name downstream in reduction.txt.
+// Discovery for one sample at a time, without MERGE or Harmony
 workflow SOLO {
     take:
         qc_obj

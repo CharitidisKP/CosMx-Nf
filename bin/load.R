@@ -20,6 +20,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -58,9 +59,7 @@ g <- importCosMx(
   split_keyword = list("Negative|SystemControl|FalseCode")
 )
 
-## Positions from each cell's own outline, matched by cell ID. Giotto's own centroids are
-## paired with IDs by row, and terra::centroids() drops the centre of a one-point outline,
-## so every cell after one would carry the next cell's centre ##
+## Each cell's centroid from its own outline, matched by cell ID ##
 centres_by_id <- function(sv) {
   g <- as.data.table(terra::geom(sv))[hole == 0]
   g[,
@@ -81,7 +80,7 @@ centres_by_id <- function(sv) {
     ),
     by = .(geom, part)
   ]
-  ## Largest part; an outline without area falls back to the mean of its vertices ##
+  ## Largest part, or the mean of its vertices for an outline without area ##
   ct <- ct[order(geom, -abs(a))][, .SD[1L], by = geom]
   ct[,
     `:=`(

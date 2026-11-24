@@ -1,7 +1,5 @@
 #!/usr/bin/env Rscript
-## Supervised InSituType against one reference profile matrix. insitutype() with n_clusts = 0.
-## Keeps anchor selection and platform rescaling. insitutypeML would skip both. ##
-## Writes per-cell CSVs. attach_supervised.R merges them onto the Giotto object.
+## Types cells against one reference profile matrix by insitutype with n_clusts = 0 ##
 a <- commandArgs(trailingOnly = TRUE)
 arg <- function(k, d = "") {
   i <- which(a == paste0("--", k))
@@ -23,6 +21,7 @@ opt <- list(
 )
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -42,6 +41,7 @@ neg <- md$neg_mean[match(rownames(counts), md$cell_ID)]
 neg[is.na(neg)] <- stats::median(neg, na.rm = TRUE)
 
 ## Same IF/morphology cohorting as the unsupervised pass. Without it only the RNA panel decides ##
+set.seed(opt$seed)
 cohort <- NULL
 if (opt$cohort) {
   cv <- trimws(strsplit(opt$cohort_vars, ",")[[1]])
@@ -117,8 +117,7 @@ if (length(shared) < opt$min_genes) {
   )
 }
 
-# Label normalisation: HCA names carry dots ("T.cell"), CosMx profiles use spaces. Downstream
-# joins key on the label string, so settle on one convention here rather than in every consumer.
+# Labels with each run of dots, spaces or underscores as one underscore
 norm_lab <- function(x) gsub("[._[:space:]]+", "_", trimws(as.character(x)))
 
 set.seed(opt$seed)
@@ -181,8 +180,7 @@ if (!is.null(sup$anchors)) {
   )
 }
 
-## insitutype() returns $prob as a cells x types matrix. insitutypeML returns a per-cell scalar.
-## Both branches kept so the function can be swapped back without touching anything below.
+## Each cell's probability for its call, from a $prob matrix or vector ##
 score_of <- function(res) {
   p <- res$prob
   if (is.matrix(p)) {
@@ -199,7 +197,7 @@ score_of <- function(res) {
   }
 }
 
-# Row-wise softmax of the loglik matrix -> per-cell posterior over all types.
+# Per-cell posterior over all types, a row-wise softmax of the logliks
 posterior <- function(res) {
   ll <- res$logliks
   if (is.null(ll) || !is.matrix(ll)) {
@@ -209,9 +207,7 @@ posterior <- function(res) {
   e / rowSums(e, na.rm = TRUE)
 }
 
-# Per-cell decision statistics. score / margin / entropy are the probability-scale confidence
-# measures (same softmax as InSituType:::logliks2probs). loglik_margin is the best-vs-runner-up
-# gap in nats, which stays informative when two correlated profiles compress the probability margin.
+# Per-cell runner-up, margin, entropy, loglik_top and loglik_margin
 cell_stats <- function(res, post) {
   n <- length(res$clust)
   ll <- res$logliks
@@ -268,8 +264,7 @@ message(sprintf(
     collapse = " / "
   )
 ))
-# Flags the degenerate case where every posterior is one-hot, so no conf threshold below 1
-# could select a type.
+# Notes when nearly every posterior is 1
 if (isTRUE(mean(out$score > 1 - 1e-9, na.rm = TRUE) > 0.999)) {
   message(
     "supervised[",
@@ -279,8 +274,7 @@ if (isTRUE(mean(out$score > 1 - 1e-9, na.rm = TRUE) > 0.999)) {
   )
 }
 
-# Per-type mean posterior (the quantity refineClusters thresholds on), plus the score
-# distribution per type so a weak call is visible without reloading the logliks.
+# Each type's mean posterior, the value refinement compares with conf
 conf <- if (is.null(post)) {
   NULL
 } else {
@@ -325,8 +319,7 @@ if (!is.null(conf)) {
     ),
     4
   )
-  # loglik-scale equivalents, for picking types to drop when the probability margin between two
-  # correlated reference profiles is too compressed to separate them.
+  # Median loglik_margin and loglik_top per type
   cf$median_loglik_margin <- round(
     vapply(
       cf$cell_type,
@@ -367,9 +360,7 @@ if (!is.null(sup$profiles)) {
   )
 }
 
-# --- optional refinement --------------------------------------------------------------------
-# refineClusters() edits the logliks matrix: types whose mean posterior falls below conf are
-# dropped and their cells reassigned to the next-best type. It needs >= 2 types to survive.
+# Optional refinement, moving cells of types below conf to their next-best type
 if (opt$refine) {
   if (is.null(conf)) {
     message("supervised[", opt$name, "]: no logliks matrix; refinement skipped")
@@ -377,8 +368,7 @@ if (opt$refine) {
     to_delete <- names(conf)[!is.na(conf) & conf < opt$conf]
     remaining <- setdiff(colnames(sup$logliks), to_delete)
     if (!length(to_delete)) {
-      # Distinguishes "every type passed the threshold" from the degenerate case where mean_conf
-      # is exactly 1.0 everywhere and no threshold below 1 could fire.
+      # No type below conf, with a note when every mean_conf is 1
       message(
         "supervised[",
         opt$name,

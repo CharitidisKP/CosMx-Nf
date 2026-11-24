@@ -18,6 +18,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -72,11 +73,7 @@ if (nrow(meta) < 2L) {
 }
 raw <- raw[, meta$cell_ID]
 
-## smiDE's overlap ratio, restricted to focal cells in one niche: the mean in their
-## neighbouring cells of other types (from any niche, so bleed across a niche border
-## counts) over the mean in the focal cells. Same neighbours and averaging as smiDE's
-## overlap_ratio_metric: radius search, each focal cell's other-type neighbours averaged,
-## then averaged over the focal cells (a cell with none contributes zero) ##
+## smiDE's overlap ratio of focal cells per niche, with neighbours from any niche ##
 xy <- as.matrix(meta[, .(sdimx, sdimy)])
 nn <- RANN::nn2(
   xy,

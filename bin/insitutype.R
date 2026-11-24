@@ -24,6 +24,7 @@ opt <- list(
 )
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -55,6 +56,7 @@ neg <- md$neg_mean[match(rownames(counts), md$cell_ID)]
 neg[is.na(neg)] <- stats::median(neg, na.rm = TRUE)
 
 ## Cohorting splits cells on the CosMx immunofluorescence / morphology channels ##
+set.seed(opt$seed)
 cohort <- NULL
 if (opt$cohort && nzchar(opt$cohort_column)) {
   if (opt$cohort_column %in% names(md)) {
@@ -173,8 +175,7 @@ newmd <- data.frame(
   cell_ID = names(ist$clust),
   insitutype_unsup = as.character(ist$clust)
 )
-# Keep the cohort assignment: it tracks segmentation quality and IF intensity, and the
-# clustering is not reproducible without it.
+# Keeps the cohort assignment as insitutype_cohort
 if (!is.null(cohort)) {
   newmd$insitutype_cohort <- as.character(cohort)[match(
     newmd$cell_ID,
@@ -253,9 +254,7 @@ if (nzchar(opt$reference)) {
     }
     set.seed(opt$seed)
 
-    # Anchor selection can fail when confidence scores are too uniform.
-    # update_reference_profiles = FALSE skips anchoring and uses the reference as given.
-    # refinement = FALSE does NOT help here despite what the error message suggests.
+    # On an anchor selection error, refits with update_reference_profiles = FALSE
     semi <- tryCatch(fit(), error = function(e) {
       if (!grepl("anchor", conditionMessage(e), ignore.case = TRUE)) {
         stop(e)

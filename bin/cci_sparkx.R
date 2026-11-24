@@ -16,6 +16,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -32,8 +33,7 @@ raw <- getExpression(merged, values = "raw", output = "matrix")
 locs <- getSpatialLocations(merged, output = "data.table")
 setkey(locs, cell_ID)
 
-## One test per sample, the kernels assume one continuous tissue. Cell type and
-## log depth are regressed out, so a hit varies in space beyond composition ##
+## SPARK-X per sample, with cell type and log depth as covariates ##
 res <- rbindlist(lapply(sort(unique(pd[[opt$sample_col]])), function(s) {
   ids <- pd[
     get(opt$sample_col) == s & !is.na(get(opt$celltype_column)),

@@ -1,12 +1,9 @@
-## Label state: the cluster labels of one clustering and the per-cell edits laid over them.
-## Base R only. bin/apply_labels.R applies it to the object and shiny/app.R shows it live, so
-## the app draws what annotate will write ##
+## Cluster labels and per-cell edits, in base R for apply_labels.R and shiny/app.R ##
 
 ## An edit with this label hands the cell back to its cluster's label ##
 KEEP_LABEL <- "(cluster label)"
 
-## A cluster labels CSV (cluster_id,label) as a named vector, cluster_id -> label. Read as text:
-## as numbers "3.1" and "3.10" are both 3.1 ##
+## Reads cluster_id,label as text into labels named by cluster_id ##
 read_cluster_labels <- function(file) {
   d <- utils::read.csv(file, colClasses = "character")
   if (!all(c("cluster_id", "label") %in% names(d))) {
@@ -30,8 +27,7 @@ empty_overrides <- function() {
   )
 }
 
-## Label edits as cell_ID, label, confidence (high, the default, or low) and note. Rows keep
-## their order: of a cell's edits, the later one wins ##
+## Cleans label edits to cell_ID, label, confidence and note, high when blank ##
 check_overrides <- function(d, what = "label overrides") {
   if (!all(c("cell_ID", "label") %in% names(d))) {
     stop(what, " needs columns cell_ID and label")
@@ -71,8 +67,7 @@ read_label_overrides <- function(file) {
   check_overrides(utils::read.csv(file, colClasses = "character"), file)
 }
 
-## Each cell's latest high-confidence edit, and its latest low-confidence edit when that is newer
-## than the high one. These are the only edits that count ##
+## Each cell's latest high edit, and its latest low edit if newer than the high one ##
 current_edits <- function(overrides) {
   ov <- overrides
   ov$row <- seq_len(nrow(ov))
@@ -87,14 +82,11 @@ current_edits <- function(overrides) {
   list(high = hi, low = lo[newer, , drop = FALSE])
 }
 
-## Each cell's labels:
-##   cell_type          its cluster's label, or its latest high-confidence edit. Every analysis
-##                      reads it
-##   cell_type_display  cell_type, or its latest low-confidence edit when that is newer than
-##                      its latest high one. Figures draw it
-##   label_confidence   low where cell_type_display is a low-confidence edit, else high
-##   cell_type_source   manual where a high-confidence edit set cell_type, else cluster
-## A cluster without a label leaves its cells NA ##
+## Each cell's labels, NA where its cluster has no label ##
+##   cell_type          cluster label or latest high edit, read by every analysis ##
+##   cell_type_display  cell_type or a newer low edit, drawn by figures ##
+##   label_confidence   low where cell_type_display is a low edit, else high ##
+##   cell_type_source   manual where a high edit set cell_type, else cluster ##
 apply_label_state <- function(cell_ids, clusters, cluster_labels, overrides) {
   cell_ids <- as.character(cell_ids)
   ct <- unname(cluster_labels[as.character(clusters)])
@@ -120,8 +112,7 @@ apply_label_state <- function(cell_ids, clusters, cluster_labels, overrides) {
   )
 }
 
-## The same edits cut to the rows that count, in their order. Applying the cut gives the same
-## labels, so a file of edits stays small however often a cell is relabelled ##
+## The edits cut to the rows that count, in order, giving the same labels ##
 compact_overrides <- function(overrides) {
   ed <- current_edits(overrides)
   rows <- sort(c(ed$high$row, ed$low$row))
@@ -132,8 +123,7 @@ compact_overrides <- function(overrides) {
   out
 }
 
-## Writes through a temporary file in the same folder, so a reader never sees half a file. The
-## folder is made when missing ##
+## Writes a CSV through a temporary file in its folder, making the folder if needed ##
 write_csv_atomic <- function(d, file) {
   dir.create(dirname(file), recursive = TRUE, showWarnings = FALSE)
   tmp <- tempfile(".tmp_", tmpdir = dirname(file), fileext = ".csv")

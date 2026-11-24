@@ -1,0 +1,99 @@
+---
+title: "05 - Subclustering"
+subtitle: "Each cluster split again on its own embedding"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+sub_f <- find_tab("^sub_.+_summary\\.csv$")
+sub_cols <- sub("_summary\\.csv$", "", basename(sub_f))
+## Per-parent figures in the parents' order, numbers before names ##
+by_parent <- function(f, sc) {
+  p <- sub(paste0("^umap_", rx(sc), "_c"), "", tools::file_path_sans_ext(basename(f)))
+  o <- order(suppressWarnings(as.numeric(p)), p)
+  list(files = f[o], labels = paste("Cluster", p[o]))
+}
+```
+
+The subcluster stage re-embeds each cluster of a basis column on its own, with its own genes, PCA, batch correction, graph and Leiden, and adds one `sub_<res>` column. Clusters below `subcluster_min_cells` stay whole.
+
+```{r}
+page_top(
+  stages = "subcluster",
+  Input = "The discover object, or the last subcluster object, and the basis column. Without <code>--subcluster_basis</code>, the resolution the stability check picked.",
+  Method = "For each cluster, the top variable genes within it, PCA, Harmony, an sNN graph with <code>subcluster_knn_k</code> neighbours and Leiden at <code>subcluster_res</code>.",
+  Output = "A <code>sub_</code> column on the subcluster object, and the tables in <code>tables/05_subclustering</code>."
+)
+```
+
+```{r}
+#| output: asis
+tree <- setNames(lapply(seq_along(sub_cols), function(i) {
+  local({
+    sc <- sub_cols[i]
+    f <- sub_f[i]
+    d <- fread(f, header = TRUE, colClasses = c(subcluster = "character", parent = "character"))
+    list(
+      "Subclusters per cluster" = function() {
+        per <- d[, .(subclusters = .N, cells = sum(n_cells)), by = parent]
+        multi <- per[subclusters > 1]
+        fig <- rfig(paste0("sub_per_parent_", sc), f, function() {
+          e <- copy(per)[, parent := factor(parent, rev(cluster_levels(parent)))]
+          ggplot(e, aes(subclusters, parent)) +
+            geom_col(fill = TEAL, width = 0.75) +
+            geom_text(aes(label = fmt_n(cells)), hjust = -0.2, size = 2.8, colour = "grey30") +
+            scale_x_continuous(expand = expansion(c(0, 0.2)), breaks = scales::breaks_pretty()) +
+            labs(x = "Subclusters, with the cluster's cells", y = "Cluster") +
+            theme_report()
+        }, 6.5, 1.2 + 0.24 * nrow(per))
+        tagList(
+          tags$p(sprintf("%d subclusters from %d clusters. Split: %s.", nrow(d), nrow(per),
+                         if (nrow(multi)) paste0(multi$parent, " into ", multi$subclusters, collapse = ", ") else "none")),
+          rgallery(list(`Subclusters per cluster` = fig), wide = TRUE)
+        )
+      },
+      "Samples in each subcluster" = function() {
+        fig <- rfig(paste0("sub_top_sample_", sc), f, function() {
+          e <- copy(d)[, parent := factor(parent, cluster_levels(parent))]
+          ggplot(e, aes(parent, top_sample_pct, size = n_cells)) +
+            geom_hline(yintercept = 80, linetype = "dashed", colour = WARM) +
+            geom_point(colour = TEAL, alpha = 0.7) +
+            scale_size_area(max_size = 6, labels = scales::label_comma(), name = "Cells") +
+            scale_y_continuous(limits = c(0, 100)) +
+            labs(x = "Cluster", y = "Cells from the largest sample (%)") +
+            theme_report()
+        }, 8, 4)
+        tagList(
+          rgallery(list(`Each subcluster's share of cells from its largest sample, the dashed line at 80%` = fig), wide = TRUE),
+          hits_table(d, csv = f, note = "top_sample is the sample with the most cells in the subcluster.")
+        )
+      },
+      "On the UMAP" = function() {
+        all_fig <- umap_fig(paste0("umap_", sc), sc)
+        p <- by_parent(figs("05_subclustering", paste0("^umap_", rx(sc), "_c.+\\.png$"), FALSE), sc)
+        tagList(
+          if (length(all_fig)) {
+            rgallery(stats::setNames(list(all_fig), paste("The subclusters of", sc, "on the run's UMAP")), big = TRUE)
+          } else {
+            gallery_named("05_subclustering", stats::setNames(paste("All subclusters of", sc), paste0("umap_", sc, ".png")), wide = TRUE)
+          },
+          tags$p(tags$b("Each cluster on its own embedding")),
+          figure_picker(p$files, p$labels, empty = "No per-cluster UMAPs.")
+        )
+      },
+      "Marker diagnostics" = function() marker_tabs(sc)
+    )
+  })
+}), sub_cols)
+if (!length(tree)) {
+  cat("No subclustering in this run.\n\n")
+}
+cat(render_tree(c(tree, list(
+  ".pipeline" = function() pipeline_figures(figs("05_subclustering", "\\.png$", FALSE)),
+  "Parameters" = function() {
+    params_table(c("subcluster_basis", "subcluster_clusters", "subcluster_res", "subcluster_knn_k",
+                   "subcluster_dims", "subcluster_min_cells"), "subcluster")
+  }
+))))
+```

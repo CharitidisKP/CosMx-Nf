@@ -27,6 +27,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -99,8 +100,7 @@ cells <- cells[
     sample_id %in% ss$sample_id
 ]
 
-## smiDE's overlap ratio per sample, cell type and gene: the mean in neighbouring cells of
-## other types over the mean in the cell type itself. Every labelled cell is a neighbour ##
+## smiDE's overlap ratio per sample, cell type and gene, over all labelled cells ##
 lab <- pd[
   !is.na(get(opt$celltype_column)) & get(opt$sample_col) %in% ss$sample_id,
   .(
@@ -166,8 +166,7 @@ side_of <- function(i) {
 ## logCPM on plain library sizes, for the FOV check ##
 lcpm <- function(m) cpm(as.matrix(m), log = TRUE, prior.count = 2)
 
-## One test per comparison and cell type. With residual df the paired QL test runs
-## (~ subject + cond, or ~ subject + arm:post for the DiD), otherwise effect sizes only ##
+## One QL test per comparison and cell type, effect sizes only without residual df ##
 run_test <- function(name, d, ct, did = FALSE) {
   status <- function(msg) {
     message("pseudobulk_de.R: ", name, ", ", ct, ": ", msg)
@@ -285,8 +284,7 @@ run_test <- function(name, d, ct, did = FALSE) {
     }
   }
 
-  ## Bleed could fake a change only where neighbours carry far more of the gene than the
-  ## cell type does at baseline, so the highest baseline ratio decides the flag ##
+  ## Bleed risk where the highest baseline overlap ratio is above overlap_flag ##
   ov <- ovl[
     cell_type == ct & sample_id %in% d[cond == "reference", sample_id],
     .(
@@ -336,8 +334,7 @@ for (i in seq_len(nrow(cmp))) {
   }
 }
 
-## Difference in differences between groups. Each subject's own baseline cancels its batch,
-## but treatment still travels with batch, so the result is exploratory ##
+## Difference in differences between comparisons in different groups, exploratory ##
 if (opt$interaction && nrow(cmp) >= 2L) {
   for (pr in combn(seq_len(nrow(cmp)), 2L, simplify = FALSE)) {
     if (cmp$grp[pr[1]] == cmp$grp[pr[2]]) {

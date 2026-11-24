@@ -20,6 +20,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -67,7 +68,7 @@ flag_min_count <- m$total_expr < min_count
 flag_min_genes <- m$nr_feats < opt$cell_min_genes
 flag_area <- if (is.null(m$Area)) rep(FALSE, nrow(m)) else m$Area > opt$area_max
 
-## Bruker's FOV call when the export carries it, otherwise mean counts per cell ##
+## FOV flag from Bruker's qcFlagsFOV, else mean counts per cell under fov_min_count ##
 flag_fov <- if (!is.null(m$qcFlagsFOV)) {
   m$qcFlagsFOV != "Pass"
 } else {

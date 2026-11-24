@@ -1,0 +1,192 @@
+---
+title: "01 - Quality control"
+subtitle: "Which cells each sample keeps"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+ss <- samples()
+qc_f <- find_tab("_qc_summary\\.csv$")
+qc <- read_files(qc_f)
+ld <- read_tab("_load_summary\\.csv$")
+flag_f <- find_tab("_qc_flags\\.csv$")
+names(flag_f) <- sub("_qc_flags\\.csv$", "", basename(flag_f))
+## A setting as the discover launch ran it, else its default ##
+setting <- function(k) {
+  v <- stage_params("discover")[[k]]
+  if (is.null(v)) v <- config_table()$default[match(k, config_table()$name)]
+  suppressWarnings(as.numeric(v))
+}
+## Every sample's per-cell flags, read once ##
+flags <- function() {
+  if (is.null(.cache$flags)) {
+    want <- c("flag_min_count", "flag_min_genes", "flag_area", "flag_fov", "flag_border", "keep",
+              "total_expr", "nr_feats", "Area", "fov", "sdimx", "sdimy", "min_count")
+    .cache$flags <- rbindlist(lapply(names(flag_f), function(s) {
+      have <- names(fread(flag_f[[s]], nrows = 0L, header = TRUE))
+      x <- fread(flag_f[[s]], header = TRUE, select = intersect(want, have))
+      x[, sample_id := s]
+    }), fill = TRUE)
+  }
+  .cache$flags
+}
+FILTERS <- c(
+  flag_min_count = "below the count floor", flag_min_genes = "too few genes", flag_area = "too large",
+  flag_fov = "in a low-count FOV", flag_border = "on an FOV border, kept"
+)
+FILTER_COLOURS <- c("#F7DD9E", "#95C7C4", "#C4B3E1", "#F5C6A5", "#C3E7FF")
+## One violin per sample of a per-cell value, a dashed line at its threshold ##
+dist_fig <- function(name, col, xlab, line = NA_real_, per_sample = NULL) {
+  rfig(name, flag_f, function() {
+    d <- flags()
+    d <- d[is.finite(d[[col]]) & d[[col]] > 0]
+    d[, s := factor(sample_id, rev(sample_levels(sample_id)))]
+    g <- ggplot(d, aes(.data[[col]], s)) +
+      geom_violin(fill = KEPT, colour = NA, scale = "width", width = 0.85) +
+      geom_boxplot(width = 0.14, outlier.shape = NA, fill = "white", colour = "grey35", linewidth = 0.3) +
+      scale_x_log10(labels = scales::label_comma()) +
+      labs(x = xlab, y = NULL) +
+      theme_report()
+    if (is.finite(line)) g <- g + geom_vline(xintercept = line, linetype = "dashed", colour = WARM)
+    if (!is.null(per_sample) && per_sample %in% names(d)) {
+      fl <- d[, .(v = get(per_sample)[1]), by = s]
+      g <- g + geom_point(data = fl, aes(v, s), shape = 124, size = 7, colour = WARM, inherit.aes = FALSE)
+    }
+    g
+  }, 7, 1.3 + 0.42 * length(flag_f))
+}
+```
+
+Each sample is loaded and filtered on its own, then the samples are merged into one object. A cell is removed when any filter flags it. Cells on FOV borders are flagged for checking and kept.
+
+```{r}
+page_top(
+  stages = "discover",
+  Input = "Each sample's flat-file export named in the samplesheet: the expression matrix, the cell metadata, the FOV positions and the cell outlines.",
+  Filters = "A cell is removed below the sample's count floor, the smaller of <code>count_cap</code> and the sample's <code>count_quantile</code> quantile, with fewer than <code>cell_min_genes</code> genes, larger than <code>area_max</code> pixels, or in an FOV whose mean count is below <code>fov_min_count</code>.",
+  Output = "Per-sample objects for MERGE, and the tables in <code>tables/01_qc</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Cells per sample" = function() {
+    if (is.null(qc)) return(missing_note("No QC tables yet."))
+    fig <- rfig("qc_kept", qc_f, function() {
+      d <- rbind(
+        data.table(sample_id = qc$sample_id, what = "removed", n = qc$cells_before - qc$cells_after),
+        data.table(sample_id = qc$sample_id, what = "kept", n = qc$cells_after)
+      )
+      d[, sample_id := factor(sample_id, rev(sample_levels(sample_id)))]
+      d[, what := factor(what, c("removed", "kept"))]
+      ggplot(d, aes(n, sample_id, fill = what)) +
+        geom_col(width = 0.7) +
+        scale_fill_manual(values = c(kept = KEPT, removed = WARM), breaks = c("kept", "removed"), name = NULL) +
+        scale_x_continuous(labels = scales::label_comma(), expand = expansion(c(0, 0.04))) +
+        labs(x = "Cells", y = NULL) +
+        theme_report()
+    }, 7, 1.2 + 0.32 * nrow(qc))
+    d <- copy(qc)
+    d[, kept_pct := round(100 * cells_after / cells_before, 1)]
+    if (!is.null(ld)) d <- merge(ld[, .(sample_id, cells_loaded = n_cells)], d, by = "sample_id", all.y = TRUE)
+    if (!is.null(ss)) {
+      d <- merge(ss[, intersect(c("sample_id", "treatment", "timepoint"), names(ss)), with = FALSE], d, by = "sample_id", all.y = TRUE)
+    }
+    setnames(d, c("cells_before", "cells_after", "genes_after", "min_count"),
+             c("cells_before_qc", "cells_kept", "genes_kept", "count_floor"), skip_absent = TRUE)
+    tagList(
+      tags$p(sprintf("%s cells kept of %s, with %s genes after QC.",
+                     fmt_n(sum(qc$cells_after)), fmt_n(sum(qc$cells_before)), fmt_n(max(qc$genes_after)))),
+      rgallery(list(`Cells kept and removed in each sample` = fig), wide = TRUE),
+      hits_table(d, page = 50, csv = qc_f)
+    )
+  },
+  "What each filter removed" = function() {
+    if (!length(flag_f)) return(missing_note("No per-cell flags yet."))
+    d <- flags()[, lapply(.SD, function(x) sum(x %in% TRUE)), by = sample_id, .SDcols = intersect(names(FILTERS), names(flags()))]
+    d <- merge(d, flags()[, .(cells = .N, removed = sum(!(keep %in% TRUE)), kept = sum(keep %in% TRUE)), by = sample_id], by = "sample_id")
+    fig <- rfig("qc_filters", flag_f, function() {
+      long <- melt(d, id.vars = "sample_id", measure.vars = intersect(names(FILTERS), names(d)), variable.name = "filter", value.name = "n")
+      long[, filter := factor(FILTERS[as.character(filter)], FILTERS)]
+      long[, sample_id := factor(sample_id, rev(sample_levels(sample_id)))]
+      ggplot(long, aes(n, sample_id, fill = filter)) +
+        geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+        scale_fill_manual(values = stats::setNames(FILTER_COLOURS, FILTERS), name = NULL) +
+        scale_x_continuous(labels = scales::label_comma(), expand = expansion(c(0, 0.04))) +
+        labs(x = "Cells flagged", y = NULL) +
+        theme_report()
+    }, 8, 1.4 + 0.75 * length(flag_f))
+    setnames(d, names(FILTERS), gsub(" ", "_", gsub(", kept", "_kept", FILTERS)), skip_absent = TRUE)
+    tagList(
+      rgallery(list(`Cells each filter flagged, per sample` = fig), wide = TRUE),
+      hits_table(d, page = 50, csv = flag_f, note = "A cell can be flagged by more than one filter. Removed counts each cell once.")
+    )
+  },
+  "Counts, genes and area per cell" = function() {
+    if (!length(flag_f)) return(missing_note("No per-cell flags yet."))
+    rgallery(list(
+      `Counts per cell, the red tick at each sample's count floor` = dist_fig("qc_counts", "total_expr", "Counts per cell", per_sample = "min_count"),
+      `Genes per cell, the dashed line at cell_min_genes` = dist_fig("qc_genes", "nr_feats", "Genes per cell", setting("cell_min_genes")),
+      `Cell area in pixels, the dashed line at area_max` = dist_fig("qc_area", "Area", "Cell area (pixels)", setting("area_max"))
+    ), wide = TRUE)
+  },
+  "Mean count per FOV" = function() {
+    if (!length(flag_f)) return(missing_note("No per-cell flags yet."))
+    n_s <- length(flag_f)
+    fig <- rfig("qc_fov", flag_f, function() {
+      d <- flags()[, .(mean_count = mean(total_expr), flagged = any(flag_fov %in% TRUE)), by = .(sample_id, fov)]
+      d[, fov := factor(fov, sort(unique(fov)))]
+      d[, sample_id := factor(sample_id, sample_levels(sample_id))]
+      ggplot(d, aes(fov, mean_count, fill = flagged)) +
+        geom_col(width = 0.8) +
+        geom_hline(yintercept = setting("fov_min_count"), linetype = "dashed", colour = WARM) +
+        facet_wrap(~sample_id, scales = "free_x", ncol = 2) +
+        scale_fill_manual(values = c(`FALSE` = KEPT, `TRUE` = WARM), labels = c(`FALSE` = "kept", `TRUE` = "flagged"), name = NULL) +
+        scale_y_continuous(expand = expansion(c(0, 0.05))) +
+        labs(x = "FOV", y = "Mean count per cell") +
+        theme_report() +
+        theme(axis.text.x = element_text(size = 6, angle = 90, vjust = 0.5, hjust = 1))
+    }, 10, 1.2 + 2 * ceiling(n_s / 2))
+    rgallery(list(`Mean count per cell in each FOV, the dashed line at fov_min_count` = fig), big = TRUE)
+  },
+  "Kept and removed cells on the tissue" = function() {
+    if (!length(flag_f)) return(missing_note("No per-cell flags yet."))
+    fl <- flags()
+    items <- lapply(sample_levels(names(flag_f)), function(s) {
+      d <- fl[sample_id == s & is.finite(sdimx) & is.finite(sdimy)]
+      if (!nrow(d)) return(character())
+      asp <- diff(range(d$sdimy)) / max(diff(range(d$sdimx)), 1)
+      rfig(paste0("qc_map_", s), flag_f[[s]], function() {
+        d[, what := factor(ifelse(keep %in% TRUE, "kept", "removed"), c("kept", "removed"))]
+        n <- as.integer(table(d$what))
+        ggplot(d[order(what)], aes(sdimx, sdimy, colour = what)) +
+          geom_point(size = 0.15, stroke = 0, shape = 16) +
+          scale_colour_manual(
+            values = c(kept = KEPT, removed = WARM), labels = paste0(c("kept", "removed"), " (", fmt_n(n), ")"),
+            name = NULL, guide = guide_legend(override.aes = list(size = 2.6))
+          ) +
+          coord_equal() +
+          theme_void(base_size = 11)
+      }, 8, 1 + 6.5 * min(max(asp, 0.3), 2))
+    })
+    rpicker(stats::setNames(items, sample_levels(names(flag_f))))
+  },
+  "Merged object" = function() {
+    m_f <- find_tab("^merge_summary\\.csv$")
+    m <- read_files(m_f)
+    if (is.null(m)) return(missing_note("Not merged yet."))
+    tagList(
+      plain_table(m[, intersect(c("n_samples", "n_cells", "n_rna", "n_negprobe"), names(m)), with = FALSE]),
+      tags$p(class = "table-note", "n_rna counts the genes and n_negprobe the negative control probes."),
+      csv_links(m_f)
+    )
+  },
+  ".pipeline" = function() pipeline_figures(figs("01_qc")),
+  "Parameters" = function() {
+    params_table(c("gene_min_cells", "cell_min_genes", "count_cap", "count_quantile", "area_max",
+                   "fov_min_count", "split_ratio_threshold"), "discover")
+  }
+)))
+```

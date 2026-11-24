@@ -21,6 +21,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -44,9 +45,7 @@ if (!opt$celltype_column %in% names(pd)) {
   stop("spatial_net.R: no column '", opt$celltype_column, "' on the object")
 }
 
-## Positions from each cell's own outline, matched by cell ID. terra::centroids() drops the
-## centre of a one-point outline but keeps its ID, and Giotto pairs centres with IDs by row,
-## so every cell after such an outline had the next cell's centre (seen in one sample) ##
+## Each cell's centroid from its own outline, matched by cell ID ##
 centres_by_id <- function(sv) {
   g <- as.data.table(terra::geom(sv))[hole == 0]
   g[,
@@ -67,7 +66,7 @@ centres_by_id <- function(sv) {
     ),
     by = .(geom, part)
   ]
-  ## Largest part; an outline without area falls back to the mean of its vertices ##
+  ## Largest part, or the mean of its vertices for an outline without area ##
   ct <- ct[order(geom, -abs(a))][, .SD[1L], by = geom]
   ct[,
     `:=`(
@@ -147,8 +146,7 @@ if (cross > 0) {
   )
 }
 
-## Maps draw the display label, striped where its confidence is low, when the analysis label
-## is cell_type; any other typing column is drawn as it is ##
+## Maps show the display label and confidence when the typing column is cell_type ##
 style <- read_label_style(opt$label_colours)
 use_display <- opt$celltype_column == "cell_type" &&
   all(c("cell_type_display", "label_confidence") %in% names(pd))
@@ -162,8 +160,7 @@ map_cells <- pd[, .(
 lv <- label_levels(map_cells$group, style)
 outlines <- cell_outlines(merged)
 
-## The null shuffles labels over the whole network. Pooled, differences in
-## composition between samples would read as enrichment, so it runs per sample ##
+## Proximity enrichment per sample, labels shuffled within the sample ##
 samples <- sort(unique(pd[[opt$sample_col]]))
 enr <- list()
 for (s in samples) {
@@ -181,7 +178,7 @@ for (s in samples) {
   )
   enr[[s]] <- cpe$enrichm_res[, sample := s]
 
-  ## Every cell as its outline, as the presentation's maps; immune cells on top ##
+  ## Maps every cell as its outline, immune cells on top ##
   d <- map_cells[sample == s]
   n <- d[, .N, by = group]
   slv <- intersect(lv, n$group)

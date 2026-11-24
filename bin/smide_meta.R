@@ -26,9 +26,7 @@ files <- list.files(opt$input, "_smide_de_results\\.csv$", full.names = TRUE)
 if (!length(files)) {
   stop("smide_meta.R: no *_smide_de_results.csv in ", opt$input)
 }
-## fread can type a numeric column as text in one file (a long run of blanks, say), and
-## rbindlist then makes it text for every file. The pooled columns are converted
-## explicitly, and anything that is not a number is reported rather than silently dropped ##
+## Reads one file and forces the pooled columns to numbers, reporting any that fail ##
 num_cols <- c("ratio", "SE", "p.value", "ncells_1", "ncells_2")
 read_one <- function(f) {
   d <- fread(f)
@@ -62,8 +60,7 @@ if (!nrow(de)) {
   stop("smide_meta.R: no contrast rows with a finite ratio and SE")
 }
 
-## Bleed inside the tested niche. A contrast names one niche (against the rest or all) or
-## two (pairwise); a row takes the highest overlap ratio among them, in its own sample ##
+## niche_overlap, the highest overlap ratio among a contrast's niches in its sample ##
 de[, niche_overlap := NA_real_]
 ovf <- list.files(opt$input, "_smide_niche_overlap\\.csv$", full.names = TRUE)
 if (length(ovf)) {

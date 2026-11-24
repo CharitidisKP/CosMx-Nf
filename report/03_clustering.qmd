@@ -1,0 +1,188 @@
+---
+title: "03 - Clustering"
+subtitle: "Leiden over the resolution ladder, and how well each resolution holds"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+cs_f <- find_tab("^cluster_summary\\.csv$")
+cs <- read_files(cs_f, colClasses = c(resolution = "character"))
+rc_f <- find_tab("^resolution_checks\\.csv$")
+rc <- read_files(rc_f, colClasses = c(resolution = "character"))
+st_f <- find_tab("^stability_clusters\\.csv$")
+pick <- if (!is.null(rc) && "picked" %in% names(rc)) rc[picked %in% TRUE, resolution] else character()
+res <- if (!is.null(cs)) cs$resolution else if (!is.null(rc)) rc$resolution else character()
+res <- res[order(as.numeric(res))]
+res_label <- function(r) {
+  paste0("Leiden ", r, if (r %in% RUN$chosen) " (chosen)", if (r %in% pick) " (picked)")
+}
+## Dashed lines at the chosen resolutions and a solid one at the pick ##
+res_lines <- function() {
+  list(
+    if (length(RUN$chosen)) geom_vline(xintercept = as.numeric(RUN$chosen), linetype = "dashed", colour = "grey60"),
+    if (length(pick)) geom_vline(xintercept = as.numeric(pick), colour = "grey25")
+  )
+}
+```
+
+A shared-nearest-neighbour graph on the batch-corrected embedding is clustered with Leiden at every resolution of the ladder. The checks score each resolution, and the stability check picks the one whose clusters hold best when 80% of the cells are clustered again.
+
+```{r}
+page_top(
+  stages = c("discover", "checks"),
+  Input = "The batch-corrected embedding and its dimensions, <code>dims_use</code>.",
+  Method = "An sNN graph with <code>knn_k</code> neighbours, Leiden at each resolution in <code>leiden_res_ladder</code>, and UMAPs and marker diagnostics for <code>chosen_resolutions</code>.",
+  Checks = "The cluster tree and the silhouette at every resolution. With <code>checks_stability</code>, three re-clusterings of 80% of the cells score each cluster by its best Jaccard overlap, and the resolution with the highest median Jaccard is picked, the coarser one on a tie.",
+  Output = "One <code>leiden_clus_res</code> column per resolution on the object, and the tables in <code>tables/03_clustering</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Resolutions" = function() {
+    if (is.null(cs)) return(missing_note("Not clustered yet."))
+    d <- copy(cs)[, .(resolution, n_clusters)]
+    mix <- lapply(d$resolution, function(r) read_tab(paste0("^sample_mix_res", rx(r), "\\.csv$")))
+    d[, max_sample_share := vapply(mix, function(m) if (is.null(m)) NA_real_ else max(as.matrix(m[, -1]), na.rm = TRUE), 0)]
+    d[, mostly_one_sample := vapply(mix, function(m) if (is.null(m)) NA_integer_ else sum(apply(as.matrix(m[, -1]), 1, max) > 0.8), 0L)]
+    extra <- intersect(c("silhouette", "median_sc3_stability", "median_jaccard", "stable_clusters", "cells_in_stable_pct"), names(rc))
+    if (length(extra)) d <- merge(d, rc[, c("resolution", extra), with = FALSE], by = "resolution", all.x = TRUE)
+    d[, chosen := ifelse(resolution %in% RUN$chosen, "yes", "")]
+    if (length(pick)) d[, picked := ifelse(resolution %in% pick, "yes", "")]
+    d <- d[order(as.numeric(resolution))]
+    checks <- if (length(extra)) {
+      rfig("resolution_checks", c(rc_f, cs_f), function() {
+        m <- intersect(c("silhouette", "median_sc3_stability", "median_jaccard", "cells_in_stable_pct"), names(d))
+        lab <- c(silhouette = "Silhouette", median_sc3_stability = "Median SC3 stability",
+                 median_jaccard = "Median best Jaccard", cells_in_stable_pct = "Cells in stable clusters (%)")
+        long <- melt(d[, c("resolution", m), with = FALSE], id.vars = "resolution", variable.name = "measure")
+        long[, `:=`(resolution = as.numeric(resolution), measure = factor(lab[as.character(measure)], lab[m]))]
+        ggplot(long, aes(resolution, value)) +
+          res_lines() +
+          geom_line(colour = TEAL, linewidth = 0.6) +
+          geom_point(colour = TEAL, size = 2) +
+          facet_wrap(~measure, scales = "free_y", ncol = 2) +
+          labs(x = "Leiden resolution", y = NULL) +
+          theme_report()
+      }, 9, 5.5)
+    }
+    sizes <- rfig("resolution_clusters", c(cs_f, rc_f), function() {
+      e <- copy(d)[, resolution := as.numeric(resolution)]
+      g <- ggplot(e, aes(resolution, n_clusters)) +
+        res_lines() +
+        geom_col(fill = KEPT, width = 0.07) +
+        labs(x = "Leiden resolution", y = "Clusters") +
+        theme_report()
+      if (!is.null(rc) && "clusters_under_100_cells" %in% names(rc)) {
+        small <- merge(e[, .(resolution)], rc[, .(resolution = as.numeric(resolution), clusters_under_100_cells)], by = "resolution")
+        g <- g + geom_col(data = small, aes(resolution, clusters_under_100_cells), fill = WARM, width = 0.07)
+      }
+      g
+    }, 7, 3.6)
+    tagList(
+      if (length(pick)) {
+        tags$p(HTML(paste0(
+          "<b>Picked:</b> ", htmlEscape(pick), ", the highest median Jaccard. <code>cosmx-nf &lt;run_id&gt; labels</code> ",
+          "and the <code>subcluster</code> stage take it when no clustering is named."
+        )))
+      },
+      rgallery(list(
+        `Each check by resolution, the chosen resolutions dashed and the pick solid` = checks,
+        `Clusters per resolution, those under 100 cells in red` = sizes
+      ), wide = TRUE),
+      plain_table(d),
+      tags$p(class = "table-note", "Max sample share: the largest share of one cluster from a single sample. Mostly one sample: clusters with more than 80% of their cells from one sample, which a small fragment can reach on its own. Silhouette: separation in the clustering embedding, higher is better. SC3 stability: how well clusters hold together across resolutions. Jaccard and stable cells: agreement with re-clustering 80% of the cells, stable at 0.75 or more."),
+      csv_links(c(cs_f, rc_f))
+    )
+  },
+  "Cluster stability" = function() {
+    st <- read_files(st_f, colClasses = c(resolution = "character", cluster = "character"))
+    if (is.null(st)) return(missing_note("Not checked in this run. checks_stability runs it."))
+    fig <- rfig("cluster_stability", st_f, function() {
+      e <- copy(st)[, `:=`(stable = mean_jaccard >= 0.75, resolution = factor(paste("Leiden", resolution), paste("Leiden", res)))]
+      ggplot(e, aes(n_cells, mean_jaccard, colour = stable)) +
+        geom_hline(yintercept = 0.75, linetype = "dashed", colour = "grey60") +
+        geom_point(size = 1.8, alpha = 0.9) +
+        scale_x_log10(labels = scales::label_comma()) +
+        scale_colour_manual(values = c(`TRUE` = TEAL, `FALSE` = WARM), labels = c(`TRUE` = "stable", `FALSE` = "unstable"), name = NULL) +
+        facet_wrap(~resolution, ncol = 5) +
+        labs(x = "Cells in the cluster", y = "Mean best Jaccard") +
+        theme_report()
+    }, 11, 1.6 + 2.2 * ceiling(length(res) / 5))
+    tagList(
+      rgallery(list(`Each cluster's stability against its size, stable at 0.75 or more` = fig), big = TRUE),
+      hits_table(st, csv = st_f, note = "Each cluster's mean best Jaccard over three re-clusterings of 80% of the cells.")
+    )
+  },
+  "UMAP per resolution" = function() {
+    cols <- paste0("leiden_clus_res", res)
+    if (length(res) && bundle_has(c("UMAP1", "UMAP2"))) {
+      have <- res[vapply(cols, bundle_has, logical(1))]
+      if (length(have)) {
+        first <- c(intersect(c(pick, RUN$chosen), have), setdiff(have, c(pick, RUN$chosen)))
+        items <- lapply(first, function(r) umap_fig(paste0("umap_leiden_", r), paste0("leiden_clus_res", r), centroids = TRUE))
+        return(rpicker(stats::setNames(items, vapply(first, res_label, ""))))
+      }
+    }
+    f <- vapply(res, function(r) {
+      a <- res_path("figures", "03_clustering", paste0("umap_leiden_res", r, ".png"))
+      b <- res_path("figures", "03_clustering", paste0("umap_leiden_clus_res", r, ".png"))
+      if (file.exists(a)) a else if (file.exists(b)) b else ""
+    }, "")
+    keep <- nzchar(f)
+    figure_picker(unname(f[keep]), vapply(res[keep], res_label, ""), empty = "No UMAPs yet.")
+  },
+  "Samples in each cluster" = function() {
+    rs <- unique(c(pick, RUN$chosen))
+    rs <- rs[vapply(rs, function(r) length(find_tab(paste0("^sample_mix_res", rx(r), "\\.csv$"))) > 0, logical(1))]
+    if (!length(rs)) return(missing_note("No sample mix tables yet."))
+    figs_mix <- lapply(rs, function(r) {
+      f <- find_tab(paste0("^sample_mix_res", rx(r), "\\.csv$"))
+      rfig(paste0("sample_mix_", r), f, function() {
+        d <- read_files(f, colClasses = list(character = 1))
+        setnames(d, 1, "cluster")
+        long <- melt(d, id.vars = "cluster", variable.name = "sample", value.name = "share")
+        long[, `:=`(cluster = factor(cluster, rev(cluster_levels(cluster))), sample = factor(sample, sample_levels(as.character(sample))))]
+        ggplot(long, aes(share, cluster, fill = sample)) +
+          geom_col(width = 0.8) +
+          geom_vline(xintercept = 0.8, linetype = "dashed", colour = "grey50") +
+          scale_fill_manual(values = sample_colours(levels(long$sample)), name = NULL) +
+          scale_x_continuous(labels = scales::label_percent(), expand = expansion(c(0, 0.01))) +
+          labs(x = "Share of the cluster's cells", y = "Cluster") +
+          theme_report()
+      }, 8, 1.4 + 0.24 * nrow(fread(f[1], header = TRUE, select = 1L)))
+    })
+    tagList(
+      rpicker(stats::setNames(figs_mix, vapply(rs, res_label, ""))),
+      tabs(setNames(lapply(rs, function(r) {
+        f <- find_tab(paste0("^sample_mix_res", rx(r), "\\.csv$"))
+        d <- read_files(f, colClasses = list(character = 1))
+        setnames(d, 1, "cluster")
+        hits_table(d, csv = f, note = "Each cluster's share of cells from each sample.")
+      }), vapply(rs, res_label, "")))
+    )
+  },
+  "Cluster tree" = function() {
+    tagList(
+      gallery_named("03_clustering/checks", c("clustree.png" = "How the clusters split as the resolution rises"), big = TRUE, empty = "No cluster tree yet."),
+      csv_links(find_tab("^clustree_nodes\\.csv$"))
+    )
+  },
+  "Marker diagnostics" = function() {
+    have <- sub("_de_top\\.csv$", "", basename(find_tab("^leiden_clus_res.+_de_top\\.csv$")))
+    first <- paste0("leiden_clus_res", unique(c(pick, RUN$chosen)))
+    cols <- unique(c(intersect(first, have), have[order(as.numeric(sub("^leiden_clus_res", "", have)))]))
+    marker_tabs(cols, vapply(sub("^leiden_clus_res", "", cols), res_label, ""))
+  },
+  ".pipeline" = function() pipeline_figures(c(figs("03_clustering", "^umap_leiden.+\\.png$", FALSE), figs("03_clustering/checks"))),
+  "Parameters" = function() {
+    tagList(
+      params_table(c("knn_k", "n_iterations", "leiden_res_ladder", "chosen_resolutions", "top_n",
+                     "marker_min_detection", "marker_min_panel_genes", "marker_min_score"), "discover"),
+      params_table(c("checks", "checks_stability"), latest_stage(c("discover", "checks")))
+    )
+  }
+)))
+```

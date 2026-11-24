@@ -1,0 +1,54 @@
+---
+title: "07 - BANKSY sweep"
+subtitle: "Every BANKSY settings row on every biopsy"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+sw_f <- find_tab("^banksy_sweep_summary\\.csv$")
+sw <- read_files(sw_f, colClasses = c(lambda = "character", res = "character"))
+```
+
+The optional `banksy_sweep` stage runs each biopsy through every row of `banksy_variants` and scores the niches each row makes, so the spatial stage's `banksy_settings` row can be chosen on evidence.
+
+```{r}
+page_top(
+  stages = "banksy_sweep",
+  Input = "The spatial object's cells, per biopsy.",
+  Method = "BANKSY with each row of <code>banksy_variants</code>, scored by agreement with the FOVs and the cell types, coherence and niche counts.",
+  Output = "The tables in <code>tables/07_spatial/banksy_sweep</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Scores per settings row" = function() {
+    if (is.null(sw)) return(missing_note("No sweep in this run. The banksy_sweep stage runs one."))
+    fig <- rfig("sweep_ari", sw_f, function() {
+      d <- copy(sw)[, setting := paste0("lambda ", lambda, ", res ", res)]
+      ggplot(d, aes(ari_vs_fov, ari_vs_celltype, colour = variant)) +
+        geom_point(size = 2.2, alpha = 0.85) +
+        scale_colour_manual(values = sample_colours(sort(unique(d$variant))), name = NULL) +
+        facet_wrap(~setting) +
+        labs(x = "Agreement with the FOVs (ARI), lower is better", y = "Agreement with the cell types (ARI)") +
+        theme_report()
+    }, 10, 6)
+    tagList(
+      rgallery(list(`Each row's niches against the FOVs and the cell types, one point per biopsy` = fig), big = TRUE),
+      tab("^banksy_sweep_summary\\.csv$", colClasses = c(lambda = "character", res = "character")),
+      csv_links(find_tab("^banksy_sweep_(metrics|times)\\.csv$"))
+    )
+  },
+  "Maps" = function() {
+    f <- figs("07_spatial/banksy_sweep", "_map_.+\\.png$", FALSE)
+    figure_picker(f, nice(f, "banksy_sweep_map_"), empty = "No sweep maps.")
+  },
+  ".pipeline" = function() pipeline_figures(figs("07_spatial/banksy_sweep", "\\.png$", FALSE)),
+  "Parameters" = function() {
+    if (!file.exists(res_path("pipeline_info", "banksy_sweep_params.json"))) return(missing_note("The sweep has not run."))
+    params_table(c("banksy_sweep_samples", "banksy_sweep_map_res", "banksy_sweep_focal"), "banksy_sweep")
+  }
+)))
+```

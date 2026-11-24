@@ -1,0 +1,64 @@
+/* Figure cards, the one-at-a-time picker and the folded "How it was made" box */
+.gal { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin: 8px 0 20px; }
+.gal.wide { grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); }
+.gal.big { grid-template-columns: 1fr; gap: 18px; }
+.gal figure { margin: 0; border: 1px solid var(--bs-border-color); border-radius: 6px; padding: 6px; background: transparent; }
+.gal img { width: 100%; height: auto; display: block; }
+.gal.big img { width: auto; max-width: 100%; max-height: 88vh; margin: 0 auto; }
+.gal figcaption, .picker-cap { font-size: 0.85rem; margin-top: 4px; overflow-wrap: anywhere; color: var(--bs-body-color); opacity: 0.8; }
+.picker { margin: 8px 0 24px; }
+.picker-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.picker-select { width: auto; min-width: 220px; max-width: 420px; }
+.picker-count { color: var(--bs-secondary-color); font-size: 0.85rem; }
+.picker-img { display: block; max-width: 100%; max-height: 88vh; margin: 0 auto; border: 1px solid var(--bs-border-color); border-radius: 6px; }
+.picker-cap { text-align: center; }
+details.made { border-left: 4px solid var(--bs-info); padding: 6px 12px; margin: 10px 0 18px; background: rgba(127, 127, 127, 0.12); }
+details.made > summary { cursor: pointer; font-weight: 600; color: var(--bs-body-color); }
+details.made[open] > summary { margin-bottom: 6px; }
+.made dt { font-weight: 600; margin-top: 4px; }
+.made dd { margin-left: 0; margin-bottom: 4px; }
+
+/* Status badges */
+.status { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+.status.ok { background: #d1e7dd; color: #0f5132; }
+.status.stale { background: #fff3cd; color: #664d03; }
+.status.running { background: #cfe2ff; color: #084298; }
+.status.missing { background: #e2e3e5; color: #41464b; }
+.status.failed { background: #f8d7da; color: #842029; }
+.status-line { margin: 2px 0; }
+.stale-note { border-left: 4px solid #ffc107; background: #fff3cd; color: #664d03; padding: 6px 12px; margin: 10px 0; }
+
+/* Notes, links and small tables */
+.missing-note { color: var(--bs-secondary-color); font-style: italic; }
+.csv-links { font-size: 0.85rem; margin: 6px 0 4px; }
+.table-note { font-size: 0.85rem; color: var(--bs-secondary-color); margin: 2px 0 6px; }
+table.plain { font-size: 0.9rem; width: auto; }
+.params td:first-child { white-space: nowrap; }
+.nav-tabs { flex-wrap: wrap; margin-top: 6px; }
+.tab-content { padding-top: 10px; }
+
+/* DataTables in the page's colours, so they follow dark and light mode */
+.dt-wrap { overflow-x: auto; margin: 4px 0 20px; }
+.dt-wrap table.dataTable { font-size: 0.85rem; color: var(--bs-body-color); }
+.dt-wrap .dataTables_wrapper { color: var(--bs-body-color); }
+.dt-wrap .dataTables_wrapper input, .dt-wrap .dataTables_wrapper select,
+.dt-wrap .form-control, .dt-wrap .form-select, select.table-filter {
+  background-color: var(--bs-body-bg); color: var(--bs-body-color); border-color: var(--bs-border-color);
+}
+select.table-filter { width: 100%; min-width: 80px; height: 28px; font-size: 0.8rem; padding: 0 4px; border: 1px solid var(--bs-border-color); border-radius: 4px; }
+.dt-wrap .selectize-input, .dt-wrap .selectize-dropdown, .dt-wrap .selectize-input input {
+  background: var(--bs-body-bg) !important; color: var(--bs-body-color) !important; border-color: var(--bs-border-color) !important;
+}
+.dt-wrap .selectize-dropdown .active { background: rgba(127, 127, 127, 0.3) !important; color: var(--bs-body-color) !important; }
+.dt-wrap .page-link { background-color: transparent; color: var(--bs-body-color); border-color: var(--bs-border-color); }
+.dt-wrap .page-item.active .page-link { background-color: rgba(127, 127, 127, 0.35); border-color: var(--bs-border-color); }
+.dt-wrap .page-item.disabled .page-link { color: var(--bs-secondary-color); background-color: transparent; }
+.dt-wrap table.dataTable thead td, .dt-wrap table.dataTable thead th { border-color: var(--bs-border-color); }
+.dt-wrap thead td input.form-control, .dt-wrap thead td .selectize-input { min-height: 28px; height: 28px; padding: 2px 6px; font-size: 0.8rem; }
+.dt-wrap thead td .selectize-input input { font-size: 0.8rem; }
+
+/* The report's own figures: one a row, each at its drawn size, its card fitted to it */
+.gal.rep { grid-template-columns: 1fr; gap: 16px; }
+.gal.rep figure { justify-self: start; max-width: 100%; }
+.gal.rep img { max-width: 100%; height: auto; }
+.picker-img { height: auto; object-fit: contain; }

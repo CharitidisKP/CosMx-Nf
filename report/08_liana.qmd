@@ -1,0 +1,73 @@
+---
+title: "08 - LIANA"
+subtitle: "Ligand-receptor pairs between neighbouring cell types"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+li_f <- find_tab("^liana_ligand_receptor\\.csv$")
+ad_f <- find_tab("^liana_cell_adjacency\\.csv$")
+```
+
+LIANA scores every ligand-receptor pair between each sender and receiver cell type with several methods and ranks the pairs by their consensus. Pairs are weighted by how often the two cell types touch.
+
+```{r}
+page_top(
+  stages = "cci",
+  Input = "The spatial object, its <code>celltype_column</code> and neighbour network.",
+  Method = "LIANA's methods on cell types with at least <code>liana_min_cells</code> cells, weighted by cell-type adjacency, ranked by aggregate rank.",
+  Output = "The tables in <code>tables/08_cci/liana</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Top pairs" = function() {
+    li <- read_files(li_f)
+    if (is.null(li) || !all(c("source", "target", "ligand.complex", "receptor.complex", "aggregate_rank") %in% names(li))) {
+      return(missing_note("LIANA has not run."))
+    }
+    fig <- rfig("liana_top", c(li_f, RUN$label_colours), function() {
+      d <- li[order(aggregate_rank)][seq_len(min(.N, 40))]
+      d[, `:=`(
+        pair = paste(ligand.complex, "to", receptor.complex),
+        cells = paste(display_name(source, STYLE), "to", display_name(target, STYLE)),
+        strength = -log10(pmax(aggregate_rank, 1e-300))
+      )]
+      d[, pair := factor(pair, rev(unique(pair)))]
+      g <- ggplot(d, aes(cells, pair, size = strength)) +
+        geom_point(aes(colour = if ("sca.LRscore" %in% names(d)) sca.LRscore else strength)) +
+        scale_size_area(max_size = 5, name = "-log10\naggregate rank") +
+        scale_colour_gradient(low = "#C3E7FF", high = TEAL, name = if ("sca.LRscore" %in% names(d)) "SCA score" else "-log10 rank") +
+        labs(x = NULL, y = NULL) +
+        theme_report() +
+        tilt_x
+      g
+    }, 3.5 + 0.3 * min(40, length(unique(paste(li$source, li$target)))), 10)
+    tagList(
+      rgallery(list(`The 40 strongest pairs by LIANA's consensus rank` = fig), big = TRUE),
+      tab("^liana_ligand_receptor\\.csv$", order = "aggregate_rank",
+          note = "Ligand-receptor pairs between cell types, by LIANA's consensus rank. A smaller aggregate_rank is stronger.")
+    )
+  },
+  "Cell-type adjacency" = function() {
+    ad <- read_files(ad_f)
+    if (is.null(ad)) return(missing_note("No adjacency table yet."))
+    fig <- rfig("liana_adjacency", c(ad_f, RUN$label_colours), function() {
+      lv <- label_levels(c(ad$source, ad$target), STYLE)
+      d <- copy(ad)[, `:=`(source = factor(source, lv), target = factor(target, rev(lv)))]
+      heat_plot(d, "source", "target", "adjacency", name = "Adjacency") +
+        scale_x_discrete(labels = function(x) display_name(x, STYLE)) +
+        scale_y_discrete(labels = function(x) display_name(x, STYLE))
+    }, heat_size(length(unique(ad$source)), length(unique(ad$target)))[["w"]], heat_size(length(unique(ad$source)), length(unique(ad$target)))[["h"]] + 0.8)
+    tagList(
+      rgallery(list(`How much each pair of cell types touches, the weight on each pair's scores` = fig), big = TRUE),
+      tab("^liana_cell_adjacency\\.csv$", colClasses = list(character = 1))
+    )
+  },
+  ".pipeline" = function() pipeline_figures(figs("08_cci/liana", "\\.png$", FALSE)),
+  "Parameters" = function() params_table(c("liana_min_cells", "celltype_column"), "cci")
+)))
+```

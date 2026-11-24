@@ -1,0 +1,52 @@
+---
+title: "07 - B-lineage cells"
+subtitle: "The B-lineage cells re-clustered on their own"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+bc_f <- find_tab("^bcell_summary\\.csv$")
+bs_f <- find_tab("^bcell_subcluster_by_sample\\.csv$")
+```
+
+The cells whose label matches `bcell_regex` get their own neighbour graph and Leiden subclusters, when there are at least `bcell_min_cells` of them.
+
+```{r}
+page_top(
+  stages = "spatial",
+  Input = "The annotate object's cells whose label matches <code>bcell_regex</code>.",
+  Method = "A kNN graph with <code>bcell_k</code> neighbours on the B-lineage cells only, and Leiden at <code>bcell_res</code>.",
+  Output = "The tables in <code>tables/07_spatial/bcell</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Subclusters" = function() {
+    bs <- read_files(bs_f, colClasses = list(character = 1))
+    fig <- if (!is.null(bs)) {
+      rfig("bcell_by_sample", bs_f, function() {
+        d <- copy(bs)[, `:=`(bcell_sub = factor(bcell_sub, cluster_levels(bcell_sub)), sample = factor(sample, rev(sample_levels(sample))))]
+        ggplot(d, aes(n_cells, sample, fill = bcell_sub)) +
+          geom_col(width = 0.8, position = position_stack(reverse = TRUE)) +
+          scale_fill_manual(values = cluster_colours(levels(d$bcell_sub)), name = "Subcluster", guide = guide_legend(ncol = 1)) +
+          scale_x_continuous(expand = expansion(c(0, 0.04))) +
+          labs(x = "B-lineage cells", y = NULL) +
+          theme_report()
+      }, 7, 1.4 + 0.32 * length(unique(bs$sample)))
+    }
+    tagList(
+      plain_table(read_files(bc_f)),
+      csv_links(bc_f),
+      rgallery(list(`B-lineage subclusters per sample` = fig), wide = TRUE),
+      gallery_named("07_spatial/bcell", c("umap_bcell_subclusters.png" = "The B-lineage subclusters on their own UMAP"), wide = TRUE),
+      tab("^bcell_subcluster_by_sample\\.csv$", colClasses = list(character = 1))
+    )
+  },
+  "Top genes per subcluster" = function() tab("^bcell_subcluster_markers\\.csv$", colClasses = list(character = 1)),
+  ".pipeline" = function() pipeline_figures(figs("07_spatial/bcell", "\\.png$", FALSE)),
+  "Parameters" = function() params_table(c("bcell_regex", "bcell_min_cells", "bcell_k", "bcell_res"), "spatial")
+)))
+```

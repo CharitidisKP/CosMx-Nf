@@ -1,0 +1,48 @@
+---
+title: "Overview"
+subtitle: "The run's outputs, one page per step"
+---
+
+```{r}
+source("_helpers.R")
+```
+
+This site shows what run **`r RUN$id`** wrote in `results/`: its figures, its tables and the settings behind them. Each page opens with its outputs, and how they were made is folded under **How it was made** at the top of the page. The site reads the files in `results/` and re-runs nothing. It was built `r RUN$updated`, after the **`r RUN$stage`** stage, from pipeline commit `r RUN$commit` ([run status](status.html)).
+
+## Pages
+
+```{r}
+tags$table(
+  class = "table table-sm plain",
+  tags$thead(tags$tr(tags$th("Page"), tags$th("What it holds"), tags$th("Stage"), tags$th("Status"))),
+  tags$tbody(Map(function(p, t, h, s) {
+    tags$tr(tags$td(tags$a(href = p, t)), tags$td(h), tags$td(tags$code(s)), tags$td(badge(stage_status(s))))
+  }, PAGES$page, PAGES$title, PAGES$holds, PAGES$stage))
+)
+```
+
+## Samples
+
+```{r}
+ss <- samples()
+if (is.null(ss)) {
+  missing_note("This build had no samplesheet.")
+} else {
+  ld <- read_tab("_load_summary\\.csv$")
+  qc <- read_tab("_qc_summary\\.csv$")
+  if (!is.null(ld)) ss <- merge(ss, ld[, .(sample_id, cells_loaded = n_cells)], by = "sample_id", all.x = TRUE)
+  if (!is.null(qc)) ss <- merge(ss, qc[, .(sample_id, cells_kept = cells_after)], by = "sample_id", all.x = TRUE)
+  hits_table(ss, page = 50, note = "The samplesheet with each sample's cells before and after QC. Paths and patient codes are left out.")
+}
+```
+
+## Labels
+
+```{r}
+st <- labels_state()
+tags$p(badge(st), " ", st$text, " ", tags$a(href = "06_annotation.html", "06 - Annotation"), " shows them on the cells.")
+```
+
+## Reading the tables
+
+Every table can be searched, sorted and filtered. A column with few values filters with a drop-down of them, and a p-value column with a threshold (below 0.01, 0.05 or 0.1). Tables longer than 5,000 rows show the 5,000 with the smallest p value, or their first 5,000, and say so. Each table links the files it comes from, which keep every row at full precision. Figures open full size in a new tab.

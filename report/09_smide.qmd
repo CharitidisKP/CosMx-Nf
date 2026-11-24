@@ -1,0 +1,189 @@
+---
+title: "09 - smiDE"
+subtitle: "Each cell type's genes between niches, per sample and pooled"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+sm_f <- find_tab("^smide_meta_summary\\.csv$")
+mt_f <- find_tab("^smide_meta\\.csv$")
+sm <- read_files(sm_f)
+mt <- read_files(mt_f)
+cut <- suppressWarnings(as.numeric(stage_params("de")$smide_fdr %||% config_table()$default[match("smide_fdr", config_table()$name)]))
+if (!is.finite(cut)) cut <- 0.05
+## One model for the figures, kmeans when it ran, and each niche against the rest ##
+model <- if (!is.null(mt) && "kmeans" %in% mt$spatial_model) "kmeans" else if (!is.null(mt)) mt$spatial_model[1] else ""
+ovr <- if (!is.null(mt)) {
+  mt[spatial_model == model & result_component == "one.vs.rest"][, `:=`(
+    log2fc = log_fc / log(2), niche = sub(" vs\\. avg\\.rest$", "", contrast)
+  )]
+}
+cell_types <- if (!is.null(ovr)) label_levels(ovr$cell_type, STYLE) else character()
+## The per-sample result files, by cell type ##
+per_sample <- function() {
+  f <- published_tables()
+  f[grepl("/09_de/smide/", f) & grepl("__.+_smide_de_results\\.csv$", basename(f))]
+}
+```
+
+smiDE fits, in each sample, a mixed model of each gene in each focal cell type, comparing the niches the cells sit in. The samples' effects are then pooled per gene. The figures use the `r if (nzchar(model)) model else "first"` spatial model and each niche against the rest.
+
+```{r}
+page_top(
+  stages = "de",
+  Input = "The spatial object, its <code>celltype_column</code>, the niche column <code>smide_groupvar</code> and the focal cell types <code>smide_celltypes</code>.",
+  Method = "smiDE GLMMs per sample and cell type, with neighbour expression within <code>smide_radius</code> as a covariate, for each <code>smide_spatial_model</code>. Then a fixed-effect, inverse-variance pool across samples, with Cochran's Q and I2 for how much the samples differ.",
+  Output = "The tables in <code>tables/09_de</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Hits" = function() {
+    if (is.null(sm)) return(missing_note("smiDE has not run."))
+    fig <- rfig("smide_hits", c(sm_f, RUN$label_colours), function() {
+      d <- copy(sm)[, cell_type := factor(cell_type, rev(label_levels(cell_type, STYLE)))]
+      ggplot(d, aes(hits, cell_type, fill = result_component)) +
+        geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+        scale_fill_manual(values = stats::setNames(NICHE_COLOURS[seq_along(unique(d$result_component))], sort(unique(d$result_component))), name = NULL) +
+        scale_y_discrete(labels = function(x) display_name(x, STYLE)) +
+        scale_x_continuous(expand = expansion(c(0, 0.04))) +
+        facet_wrap(~spatial_model) +
+        labs(x = "Genes below the FDR cutoff", y = NULL) +
+        theme_report()
+    }, 9, 1.6 + 0.5 * length(unique(sm$cell_type)))
+    niches <- if (!is.null(ovr)) {
+      rfig("smide_hits_niche", c(mt_f, RUN$label_colours), function() {
+        d <- ovr[, .(hits = sum(fdr < cut, na.rm = TRUE)), by = .(cell_type, niche)]
+        d[, `:=`(cell_type = factor(cell_type, rev(cell_types)), niche = factor(niche, niche_levels(niche)))]
+        heat_plot(d, "niche", "cell_type", "hits", name = "Genes") +
+          geom_text(aes(label = hits), size = 2.6, colour = "grey20") +
+          scale_y_discrete(labels = function(x) display_name(x, STYLE))
+      }, heat_size(length(unique(ovr$niche)), length(cell_types))[["w"]] + 1, heat_size(length(unique(ovr$niche)), length(cell_types))[["h"]] + 0.5)
+    }
+    tagList(
+      rgallery(list(
+        `Genes below the cutoff per cell type, model and comparison` = fig,
+        `Genes below the cutoff per cell type and niche, each niche against the rest` = niches
+      ), big = TRUE),
+      hits_table(sm, csv = sm_f, note = "heterogeneous counts the hits whose samples differ (Cochran's Q). flagged counts those that neighbouring cells may carry.")
+    )
+  },
+  "Volcanoes" = function() {
+    if (is.null(ovr)) return(missing_note("No pooled results yet."))
+    items <- lapply(cell_types, function(ct) {
+      n_n <- length(unique(ovr[cell_type == ct & is.finite(fdr), niche]))
+      rfig(paste0("smide_volcano_", ct), mt_f, function() {
+        d <- ovr[cell_type == ct]
+        d[, niche := factor(niche, niche_levels(niche))]
+        volcano_plot(d, "log2fc", "fdr", cut = cut, gene = "target", facet = "niche", flag = "niche_bleed")
+      }, 11, 1.4 + 2.6 * ceiling(n_n / 3))
+    })
+    tagList(
+      rpicker(stats::setNames(items, display_name(cell_types, STYLE))),
+      tags$p(class = "table-note", "Each niche against the rest. A panel stops a quarter past its largest hit, or at three times the upper quartile of its genes when it has none, and genes past that sit at its edge.")
+    )
+  },
+  "Top genes across niches" = function() {
+    if (is.null(ovr)) return(missing_note("No pooled results yet."))
+    items <- lapply(cell_types, function(ct) {
+      rfig(paste0("smide_heat_", ct), mt_f, function() {
+        d <- ovr[cell_type == ct]
+        top <- d[fdr < cut][order(fdr)][, unique(target)][seq_len(min(30, length(unique(d[fdr < cut, target]))))]
+        if (!length(top)) return(NULL)
+        d <- d[target %in% top]
+        d[, `:=`(target = factor(target, rev(top)), niche = factor(niche, niche_levels(niche)), hit = fdr < cut)]
+        heat_plot(d, "niche", "target", "log2fc", diverging = TRUE, name = "log2 fold\nchange", dot = "hit",
+                  limits = c(-1, 1) * max(abs(d$log2fc[d$hit]), na.rm = TRUE))
+      }, 6, 8)
+    })
+    tagList(
+      rpicker(stats::setNames(items, display_name(cell_types, STYLE)), empty = "No genes below the cutoff."),
+      tags$p(class = "table-note", "The 30 genes with the smallest FDR in each cell type, their log2 fold change in each niche against the rest. A dot: below the cutoff. The colours stop at the largest hit.")
+    )
+  },
+  "Across samples" = function() {
+    if (is.null(ovr)) return(missing_note("No pooled results yet."))
+    files <- per_sample()
+    if (!length(files)) return(missing_note("No per-sample results yet."))
+    items <- lapply(cell_types, function(ct) {
+      f_ct <- files[grepl(paste0("__", rx(ct), "_smide_de_results\\.csv$"), basename(files))]
+      top <- ovr[cell_type == ct & fdr < cut][order(fdr)][seq_len(min(.N, 6))]
+      if (!nrow(top) || !length(f_ct)) return(character())
+      rfig(paste0("smide_forest_", ct), c(mt_f, f_ct), function() {
+        want <- c("contrast", "ratio", "SE", "target", "result_component", "sample", "spatial_model")
+        s <- rbindlist(lapply(f_ct, function(f) {
+          x <- as_numbers(fread(f, header = TRUE, select = intersect(want, names(fread(f, nrows = 0L, header = TRUE)))))
+          x[result_component == "one.vs.rest" & spatial_model == model & target %in% top$target & !is.na(ratio)]
+        }), fill = TRUE)
+        s <- merge(s, top[, .(contrast, target)], by = c("contrast", "target"))
+        ## Sample fits whose 95% interval stays within 10 log2 units each side ##
+        s <- s[ratio > 0 & SE / ratio / log(2) <= 5]
+        s[, `:=`(est = log2(ratio), lo = log2(ratio) - 1.96 * SE / ratio / log(2), hi = log2(ratio) + 1.96 * SE / ratio / log(2), what = sample)]
+        p <- top[, .(contrast, target, est = log_fc / log(2), lo = (log_fc - 1.96 * se) / log(2), hi = (log_fc + 1.96 * se) / log(2), what = "pooled")]
+        d <- rbind(s[, .(contrast, target, est, lo, hi, what)], p)
+        d[, gene := paste0(target, ", ", sub(" vs\\. avg\\.rest$", "", contrast))]
+        d[, gene := factor(gene, unique(paste0(top$target, ", ", sub(" vs\\. avg\\.rest$", "", top$contrast))))]
+        lv <- c(sample_levels(setdiff(unique(d$what), "pooled")), "pooled")
+        d[, what := factor(what, rev(lv))]
+        ggplot(d, aes(est, what, colour = what == "pooled")) +
+          geom_vline(xintercept = 0, colour = "grey75") +
+          geom_errorbar(aes(xmin = lo, xmax = hi), width = 0.25, orientation = "y") +
+          geom_point(aes(size = what == "pooled")) +
+          scale_colour_manual(values = c(`TRUE` = WARM, `FALSE` = TEAL), guide = "none") +
+          scale_size_manual(values = c(`TRUE` = 2.6, `FALSE` = 1.6), guide = "none") +
+          facet_wrap(~gene, scales = "free_x") +
+          labs(x = "log2 fold change in the niche against the rest, with 95% intervals", y = NULL) +
+          theme_report() +
+          theme(panel.spacing.x = grid::unit(1.6, "lines"))
+      }, 10, 2 + 2.8 * ceiling(nrow(top) / 3))
+    })
+    tagList(
+      rpicker(stats::setNames(items, display_name(cell_types, STYLE)), empty = "No genes below the cutoff."),
+      tags$p(class = "table-note", "The six genes with the smallest FDR in each cell type: each sample's estimate, and the pooled one in red. Sample fits whose 95% interval runs past 10 log2 units each side carry almost no weight in the pool and are left out.")
+    )
+  },
+  "How much the samples differ" = function() {
+    if (is.null(ovr) || !"I2" %in% names(ovr)) return(missing_note("No pooled results yet."))
+    fig <- rfig("smide_i2", c(mt_f, RUN$label_colours), function() {
+      d <- ovr[fdr < cut & is.finite(I2)]
+      if (!nrow(d)) return(NULL)
+      d[, cell_type := factor(cell_type, rev(cell_types))]
+      ggplot(d, aes(I2, cell_type)) +
+        geom_violin(fill = KEPT, colour = NA, scale = "width") +
+        geom_jitter(height = 0.15, size = 0.6, colour = TEAL, alpha = 0.5) +
+        scale_y_discrete(labels = function(x) display_name(x, STYLE)) +
+        scale_x_continuous(limits = c(0, 100)) +
+        labs(x = "I2 of the hits (%), the share of their variation that is between samples", y = NULL) +
+        theme_report()
+    }, 8, 1.4 + 0.45 * length(cell_types))
+    rgallery(list(`Between-sample heterogeneity of the hits` = fig), wide = TRUE, empty = "No genes below the cutoff.")
+  },
+  "Genes" = function() {
+    tab("^smide_meta\\.csv$", order = "fdr", note = "Each gene's niche effect pooled across samples. niche_bleed marks genes that neighbouring cells of other types carry far more of inside the niche.")
+  },
+  "Per sample" = function() {
+    f <- per_sample()
+    if (!length(f)) return(missing_note("No per-sample smiDE results yet."))
+    d <- data.table(
+      sample = basename(dirname(f)),
+      cell_type = sub("^.+?__(.+)_smide_de_results\\.csv$", "\\1", basename(f)), file = f
+    )[order(sample, cell_type)]
+    tags$table(
+      class = "table table-sm plain",
+      tags$thead(tags$tr(tags$th("Sample"), tags$th("Cell type"), tags$th("Results"))),
+      tags$tbody(Map(function(s, ct, x) {
+        tags$tr(tags$td(s), tags$td(ct), tags$td(tags$a(href = href(x), target = "_blank", basename(x))))
+      }, d$sample, d$cell_type, d$file))
+    )
+  },
+  ".pipeline" = function() pipeline_figures(c(figs("09_de", "^smide.+\\.png$", FALSE), figs("09_de/smide", "\\.png$"))),
+  "Parameters" = function() {
+    params_table(c("smide_groupvar", "smide_celltypes", "smide_radius", "smide_overlap_threshold", "smide_min_detection",
+                   "smide_min_cells_per_niche", "smide_family", "smide_spatial_model", "smide_k_prop_n", "smide_comparisons",
+                   "smide_fdr", "smide_niche_overlap_flag"), "de")
+  }
+)))
+```

@@ -1,0 +1,63 @@
+Bootstrap: docker
+# rocker/rstudio:4.5.1, pinned by digest
+From: rocker/rstudio@sha256:8ed7ddf59268fece06843550dbe891c0e9fd5af25c334fa4cc68114f21be77e7
+
+%labels
+    org.opencontainers.image.title CosMx-Nf
+    org.opencontainers.image.source https://github.com/CharitidisKP/CosMx-Nf
+    org.opencontainers.image.base.name rocker/rstudio:4.5.1
+
+%help
+    Environment for the CosMx-Nf pipeline: R 4.5.1, every R package in R/renv.lock, and the
+    Python that Giotto calls through reticulate, at /opt/py. Built by Environment/build.sh;
+    Environment/README.md has the details.
+
+%files
+    R/renv.lock /opt/cosmx-nf/renv.lock
+    R/install.R /opt/cosmx-nf/install.R
+    python/conda-explicit.txt /opt/cosmx-nf/conda-explicit.txt
+    python/requirements.txt /opt/cosmx-nf/requirements.txt
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+
+    # System libraries and the build toolchain for the locked R packages
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential gfortran cmake pkg-config git curl ca-certificates bzip2 \
+        zlib1g-dev libbz2-dev liblzma-dev libzstd-dev libicu-dev \
+        libcurl4-openssl-dev libssl-dev libxml2-dev libgit2-dev libuv1-dev \
+        libgdal-dev gdal-bin libgeos-dev libproj-dev libudunits2-dev \
+        libsqlite3-dev libabsl-dev libhdf5-dev libgsl-dev libglpk-dev \
+        libgmp-dev libmpfr-dev libnlopt-dev libnode-dev \
+        libmagick++-dev gsfonts libcairo2-dev libxt-dev libx11-dev \
+        libfontconfig1-dev libfreetype-dev libharfbuzz-dev libfribidi-dev \
+        libpng-dev libjpeg-dev libtiff-dev libwebp-dev
+    rm -rf /var/lib/apt/lists/*
+
+    # Python for Giotto: the exact conda packages, then the pip-installed ones on top
+    export MAMBA_ROOT_PREFIX=/opt/micromamba
+    curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/2.3.2 \
+        | tar -xj -C /usr/local bin/micromamba
+    micromamba create -y -p /opt/py -f /opt/cosmx-nf/conda-explicit.txt
+    /opt/py/bin/python -m pip install --no-cache-dir --no-deps \
+        -r /opt/cosmx-nf/requirements.txt
+    micromamba clean -a -y
+
+    # R packages at the versions in the lock, into the site library
+    Rscript /opt/cosmx-nf/install.R /opt/cosmx-nf/renv.lock /usr/local/lib/R/site-library
+
+%environment
+    export RETICULATE_PYTHON=/opt/py/bin/python
+
+%runscript
+    exec R "$@"
+
+%test
+    Rscript -e 'pkgs <- c("Giotto", "InSituType", "InSituCor", "HieraType", "InSituTree",
+                          "smiDE", "liana", "nichenetr", "mistyR", "nnSVG", "SPARK", "Banksy",
+                          "scran", "edgeR", "terra", "rmarkdown")
+                for (p in pkgs) suppressPackageStartupMessages(library(p, character.only = TRUE))
+                cat("R", as.character(getRversion()), "and", length(pkgs), "pipeline packages load\n")'
+    /opt/py/bin/python -c 'import leidenalg, igraph, community, sklearn, smfishHmrf; print("Python modules load")'

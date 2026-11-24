@@ -22,6 +22,8 @@ Other/
 *_files/
 figure/
 *.html
+# The report's table script, included on every page
+!report/_tables.html
 *.pdf
 *.bak_*
 notebooks/*.txt
@@ -33,17 +35,20 @@ notebooks/.vscode/
 omnipathr-log/
 .DS_Store
 
-# Reference profile matrices and NicheNet model files -- staged per machine, not shipped
+# Reference profile matrices and NicheNet model files, staged per machine
 assets/profiles/
 assets/nichenet/
 
-# Working docs -- for the next session, not for the repo
+# Working notes for the next session
 handoff.md
 
-# Site settings and the real sample sheets -- per machine, never in git
+# Site settings and the real sample sheets, kept out of git
 conf/site.yaml
 assets/private/
 data/
+
+# Built Apptainer images
+*.sif
 
 # A run's curated labels, when the app runs against a results mirror in this folder
 /labels/

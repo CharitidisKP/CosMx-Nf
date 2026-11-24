@@ -8,10 +8,8 @@ source("../bin/label_state.R")
 # The figures' white slash across a low-confidence label (GeomSlash, dot_r)
 source("../bin/cosmx_figures.R")
 
-# Which results tree to read: COSMX_NF when it is set, otherwise the run the pipeline ran last
-# among those beside the pipeline (../../Runs) with an app bundle. Its stage log gains a line at
-# every launch; a run without one counts from its bundle. Set COSMX_NF to read another run
-latest_results <- function(runs = file.path("..", "..", "Runs")) {
+# Results to read: COSMX_NF, else the last run with a bundle in COSMX_NF_RUNS or ../../Runs
+latest_results <- function(runs = Sys.getenv("COSMX_NF_RUNS", file.path("..", "..", "Runs"))) {
   b <- Sys.glob(file.path(runs, "*", "results", "local_export", "cells_umap_clusters.rds"))
   if (!length(b)) return(NULL)
   res <- dirname(dirname(b))
@@ -40,9 +38,7 @@ src <- if (dir.exists(file.path(NF, "local_export"))) {
 cells <- src$cells; poly <- src$poly; expr <- src$expr; expr_raw <- src$expr_raw
 DIAG  <- src$diag;  DE   <- src$de
 
-# Lineage agreement: a logical cells x methods matrix per lineage, built by the loader.
-# The colour column itself is assembled in the server from the primary method and whichever
-# others are ticked, so it is a reactive vector that is not, and cannot be, in `cells`.
+# Lineage agreement, the loader's logical cells x methods matrix per lineage
 LIN     <- src$lineage %||% list()
 LIN_NM  <- if (length(LIN)) names(LIN)[1] else NULL
 LIN_COL <- if (is.null(LIN_NM)) NULL else paste0(LIN_NM, "_agreement")
@@ -51,10 +47,7 @@ LIN_M   <- if (is.null(LIN_NM)) character() else colnames(LIN[[LIN_NM]])
 pick <- function(...) { for (n in c(...)) if (n %in% names(cells)) return(n); NULL }
 emb  <- function(a, b) if (all(c(a, b) %in% names(cells))) c(a, b)
 
-# One tab per subclustered parent. Its cells were re-embedded on their own PCA, so they do not
-# belong on the harmony UMAP -- the structure there is the parent's, not theirs.
-# Per-parent subcluster embeddings, named "<basis> · cluster <n>" and ordered by basis, then
-# parent. They share one Subclusters tab, with the parent picked from a list.
+# Per-parent subcluster embeddings, named "<basis> · cluster <n>", sorted
 SUB_EMB <- {
   u1 <- grep("_c[^_]+_UMAP1$", names(cells), value = TRUE)
   basis <- sub("_c[^_]+_UMAP1$", "", u1)
@@ -70,25 +63,20 @@ SUB_COLS <- unique(sub(" · cluster .*$", "", names(SUB_EMB)))
 EMB <- Filter(Negate(is.null), c(list(
   Spatial = emb("x", "y"),
   UMAP    = emb("UMAP1", "UMAP2") %||% emb("UMAP_1", "UMAP_2"),
-  # The same cells embedded on PCA instead of harmony. Present only when the run corrected
-  # for batch, and carried in the same cells table so colour, gene and sample filters hold
-  # across the pair -- switching tabs is then a clean before/after of the correction alone.
+  # UMAP on the uncorrected PCA, present when the run corrected for batch
   "UMAP pre-batch" = emb("UMAPpre1", "UMAPpre2"),
   PCA     = emb("PCA_1", "PCA_2")
 ), if (length(SUB_EMB)) stats::setNames(list(SUB_EMB[[1]]), SUB_TAB)))
-# Output ids, brush ids and the per-page facet memory are keyed by a slug: a display name
-# with a space or a hyphen in it cannot be part of an input id.
+# Each view's slug, used in its output and input ids
 VID <- c(Spatial = "spatial", UMAP = "umap",
          "UMAP pre-batch" = "umap_pre", PCA = "pca", Subclusters = "subclusters")[names(EMB)]
 names(VID) <- names(EMB)
-# Manual edits from the Annotate menu are laid over this column and shown as <column>_edited.
-# "(cluster label)" as a label hands a cell back to its cluster's label.
+# The label column Annotate edits go over, shown as <column>_edited
 BASE_LAB <- pick("cell_type", grep("^label_", names(cells), value = TRUE))
 EDIT_COL <- if (is.null(BASE_LAB)) NULL else paste0(BASE_LAB, "_edited")
 KEEP_LAB <- KEEP_LABEL
 
-# The run's curated labels, beside its results: what annotate applies (main.nf's labels_dir).
-# Cluster labels, per-cell edits and the chosen clustering are saved here as they are made
+# The run's labels folder that annotate reads, where the app saves its edits
 LABEL_DIR  <- normalizePath(Sys.getenv("COSMX_LABELS", file.path(NF, "..", "labels")),
                             mustWork = FALSE)
 OV_FILE    <- file.path(LABEL_DIR, "label_overrides.csv")
@@ -101,9 +89,7 @@ read_labs  <- function(dir) {
                   sub("^cluster_labels\\.(.+)\\.csv$", "\\1", basename(f)))
 }
 
-# Cluster-level labels, edited in Tables > Cluster labels. Each clustering starts from its saved
-# labels, else from the pipeline's draft in tables/06_annotation/labels, else from the majority
-# current label of its cells.
+# Clusterings and their labels, saved ones over the pipeline's drafts
 CL_BASES <- grep("^sub_|^leiden_clus_res", names(Filter(is.factor, cells)), value = TRUE)
 LABS_SAVED <- read_labs(LABEL_DIR)
 LABS <- utils::modifyList(read_labs(file.path(NF, "tables", "06_annotation", "labels")), LABS_SAVED)
@@ -112,9 +98,7 @@ CHOSEN0 <- if (file.exists(BASIS_FILE)) trimws(readLines(BASIS_FILE, n = 1L, war
   if (length(LABS_SAVED) == 1L) names(LABS_SAVED) else NULL
 CL_DEFAULT <- if (isTRUE(CHOSEN0 %in% CL_BASES)) CHOSEN0 else
   if ("sub_res0.3" %in% CL_BASES) "sub_res0.3" else CL_BASES[1]
-# The labels in Tables > Cluster labels laid over the cells of the clustering picked there, with
-# the Annotate edits on top: the cell_type annotate will write. The colouring the app opens on.
-# Beside it the label figures will draw (low-confidence edits included) and its confidence
+# Live columns for annotate's cell_type, the figures' labels and their confidence
 CUSTOM_COL  <- if (length(CL_BASES)) "custom_annotation" else NULL
 DISPLAY_COL <- if (length(CL_BASES)) "custom_display" else NULL
 CONF_COL    <- if (length(CL_BASES)) "custom_confidence" else NULL
@@ -123,8 +107,7 @@ LIVE_COLS   <- c(CUSTOM_COL, DISPLAY_COL, CONF_COL)
 LAB_COLS <- unique(c(CUSTOM_COL, DISPLAY_COL, BASE_LAB, EDIT_COL,
                      intersect("cell_type_display", names(cells)),
                      grep("^label_", names(cells), value = TRUE)))
-# The marker-panel types each label covers. A cluster whose marker best guess falls outside its
-# label's set is flagged for review.
+# The marker-panel types each label covers, used to flag clusters for review
 LABEL_OK <- list(
   PT = "PT", PT_injured = c("PT_injured", "PT"), TAL_DCT = c("TAL", "DCT", "Macula_densa"),
   CNT_CD = c("CNT", "Principal_cell", "IC"), Podocyte = "Podocyte",
@@ -138,26 +121,18 @@ LABEL_OK <- list(
   Plasma_cell = "Plasma")
 CAT   <- c(CUSTOM_COL, DISPLAY_COL, CONF_COL, names(Filter(is.factor, cells)), LIN_COL, EDIT_COL)
 SAMP  <- pick("sample_id", "sample")
-# A column that never varies within a sample is sample-level metadata. Colouring tissue by
-# it just recolours the block of space each sample occupies, so offer those on embeddings
-# only. Derived rather than listed by name, so condition columns travel whatever they are
-# called. Split by is deliberately NOT filtered -- see the emb observer.
-# nlevels > 1 guards against a degenerate clustering column (res0.02 collapses to one
-# cluster, so it is constant within every sample and would be misread as metadata).
+# The sample column and others with 2+ levels and one value per sample
 GRP <- if (is.null(SAMP)) character() else {
   const_in_sample <- function(z)
     nlevels(droplevels(z)) > 1 &&
       all(tapply(z, cells[[SAMP]], function(v) length(unique(v[!is.na(v)])) <= 1))
-  # intersect with names(cells): CAT also carries the custom, lineage and edited columns,
-  # which are reactive and have no column to test
+  # Tests only CAT's real columns, not the reactive ones
   c(SAMP, names(Filter(const_in_sample, cells[intersect(setdiff(CAT, SAMP), names(cells))])))
 }
-# GRP still drives Split by; on Spatial the samples are stacked, so colouring by treatment or
-# timepoint blocks them visibly and is worth having.
+# Every view offers the same columns for Colour by
 cat_for <- function(view) CAT
 
-# selectInput renders a named list as <optgroup>s. Group by what the column IS, so the
-# annotation columns stop being an undifferentiated wall of names.
+# Groups of the Colour by list by what each column is, shown as <optgroup>s
 GROUPS <- list(
   # The labels as the next annotate will write them, edits included
   "Labels - live (labels folder)" = function(x) x %in% LIVE_COLS,
@@ -175,8 +150,7 @@ grouped_choices <- function(cols) {
   out <- list(); left <- cols
   for (g in names(GROUPS)) {
     hit <- left[GROUPS[[g]](left)]
-    # as.list(): Shiny flattens a length-1 group into a plain option, so a group holding a
-    # single column would silently lose its heading
+    # as.list() keeps the heading of a one-column group
     if (length(hit)) { out[[g]] <- as.list(hit); left <- setdiff(left, hit) }
   }
   if (length(left)) out[["Other"]] <- as.list(left)
@@ -193,13 +167,12 @@ FOVS <- if (is.null(SAMP) || !"fov" %in% names(cells)) NULL else {
   lapply(split(u, factor(u$s, levels = unique(u$s))),
          function(z) stats::setNames(paste(z$s, z$f, sep = "|"), paste("FOV", z$f)))
 }
-# Spatial shows one sample at a time; this choice stacks them all instead
+# The sample choice that stacks every sample on Spatial
 ALL_SAMPLES <- ".all"
 GENES <- if (is.null(expr)) character() else rownames(expr)
 GREY  <- "#DCE3E0"
 # --- marker evidence -------------------------------------------------------------------
-# A label is a claim; the markers are the evidence for it. Panels come from the repo's own
-# canonical_markers.csv so the app scores against the same vocabulary DIAGNOSTICS does.
+# Marker panels from assets/canonical_markers.csv
 MK <- tryCatch(utils::read.csv("../assets/canonical_markers.csv"), error = function(e) NULL)
 mk_panels <- function(by) {
   if (is.null(MK) || is.null(expr_raw)) return(list())
@@ -210,40 +183,31 @@ mk_panels <- function(by) {
 MK_SET <- if (is.null(MK)) list() else
   list(compartment = mk_panels("compartment"), cell_type = mk_panels("cell_type"))
 MK_GENES <- unique(unlist(MK_SET, use.names = FALSE))
-# Detection tracks sequencing depth, so a naive fold reports depth as biology. Deciles of
-# total counts hold depth fixed; the expected count for a group is then the background rate
-# in each decile weighted by how that group is distributed across them.
+# Each cell's decile of total_counts, to hold depth fixed
 DEC <- if (!"total_counts" %in% names(cells) || anyNA(cells$total_counts)) NULL else {
   br <- unique(stats::quantile(cells$total_counts, seq(0, 1, 0.1), na.rm = TRUE))
   if (length(br) > 2) cut(cells$total_counts, br, include.lowest = TRUE, labels = FALSE)
   else NULL
 }
 NDEC <- if (is.null(DEC)) 1L else max(DEC)
-# Second recessive tier. "others only" is not the subject but is not background either, and
-# at 59,296 cells it takes over the panel if it is given a palette colour.
+# A second, darker background grey, for the "others only" level
 GREY2 <- "#A8B6C0"
-# Per-cell posteriors, joined from the published stage CSVs. Offered as a threshold rather
-# than as bands on the legend: where to cut is the question, so it should be a control, not
-# a decision baked into a column. The legend is then free to carry the cell types.
+# Per-cell posteriors from the stage CSVs, used as a confidence threshold
 SCORE <- grep("_score$", names(cells), value = TRUE)
-# ht_call's score is published as ht_score; everything else is <column>_score
+# Finds an annotation's score column, ht_score for ht_call, else <column>_score
 score_of <- function(col) {
   if (is.null(col)) return(NULL)
   s <- if (identical(col, "ht_call")) "ht_score" else paste0(col, "_score")
   if (s %in% SCORE) s else NULL
 }
 
-# a label_<res> column is a renaming of leiden_clus_<res>; show that basis's triage
+# Maps a label_<res> column to its clustering, leiden_clus_<res>
 basis_of <- function(c) if (grepl("^label_", c)) paste0("leiden_clus_", sub("^label_", "", c)) else c
 
 pal_n <- function(k) if (k <= length(pal_cat)) pal_cat[seq_len(k)] else
   c(pal_cat, scales::hue_pal(h = c(200, 560), l = 62, c = 72)(k - length(pal_cat)))
 
-# keyed by LEVEL NAME, rebuilt per column: cluster 3 at res0.3 is not cluster 3 at
-# res0.8, so the two must not be forced to share a colour.
-# A level that means "not this" is background and gets GREY rather than a palette slot:
-# 94,179 cells painted spring green swamp the 514 that are the point, and burn a colour
-# the real classes need. Named by convention -- "none", "no", or anything "not ...".
+# Colours levels by name, with "none", "no", "unknown" and "not ..." in grey
 pal_for <- function(f) {
   lv <- levels(f)
   bg  <- lv %in% c("none", "no", "unknown") | grepl("^not ", lv)
@@ -255,9 +219,7 @@ pal_for <- function(f) {
   p
 }
 
-# One colour per cell-type label, shared with the figures: kidney types pastel, immune types
-# vivid, untyped grey. Keyed by label, so a label keeps its colour whatever else is present.
-# A label missing from the file takes the next pal_wide colour the file does not use.
+# Label colours from assets/label_colours.csv, unused pal_wide ones for the rest
 LAB_PAL <- tryCatch(utils::read.csv("../assets/label_colours.csv", colClasses = "character"),
                     error = function(e) NULL)
 pal_labels <- function(lv) {
@@ -273,9 +235,7 @@ lab_layer <- function(v) {
   ifelse(g %in% "untyped", 0L, ifelse(g %in% "immune", 2L, 1L))
 }
 
-# Pinch or Cmd/Ctrl + scroll zooms; plain scrolling is left to the page. Deltas are summed and
-# sent once the gesture pauses, so a flick costs one re-render instead of thirty. Chrome
-# reports pinch as a ctrl-wheel, Safari as gesture events.
+# Page script for pinch or Cmd/Ctrl-scroll zoom, pan, figure size and plot height
 ZOOM_JS <- "
 (function () {
   function flush(el) {
@@ -372,10 +332,7 @@ ZOOM_JS <- "
 })();
 "
 
-# Draw mode: press and drag on the plot to outline cells. The path is kept in CSS pixels of
-# the plot image and sent on release; the server maps it to data coordinates with the
-# plot's own coordmap. The outline is cleared when the plot redraws, which is when the
-# server draws it again in data coordinates.
+# Page script for Draw mode, sending the outline dragged on the plot on release
 LASSO_JS <- "
 (function () {
   var st = null;
@@ -419,8 +376,7 @@ LASSO_JS <- "
 })();
 "
 
-# The Tables panel under the plot. A click on its bar opens or closes it; dragging the bar
-# resizes it, up for more table and down for more plot. Shiny is told when its outputs show.
+# Page script that opens, closes and resizes the Tables panel from its bar
 TABLES_JS <- "
 (function () {
   var drag = null;
@@ -481,8 +437,7 @@ in_poly <- function(px, py, vx, vy) {
   inside
 }
 
-# An overrides CSV: cell_ID and label, confidence and note optional. Cells not in this bundle
-# are dropped.
+# Reads an overrides CSV of cell_ID and label, dropping cells not in this bundle
 read_overrides <- function(f) {
   d <- read_label_overrides(f)
   d[d$cell_ID %in% cells$cell_ID, , drop = FALSE]
@@ -526,9 +481,7 @@ html, body { overscroll-behavior-x: none; }
 
 scroll_box <- function(...) htmltools::bindFillRole(div(class = "cosmx-scroll", ...), item = TRUE)
 
-# Bootstrap dropdown that stays open while its inputs are used. Fixed positioning lets the
-# menu escape the card's overflow clipping.
-# Widths are in rem, so they shrink with the page's root font size (theme.R)
+# A Bootstrap dropdown that stays open while in use, with a width in rem
 dd <- function(label, ..., width = "20rem") div(
   class = "dropdown",
   tags$button(class = "btn btn-sm btn-outline-primary dropdown-toggle", type = "button",
@@ -538,8 +491,7 @@ dd <- function(label, ..., width = "20rem") div(
 
 toolbar <- div(
   class = "plot-toolbar d-flex flex-wrap gap-2 align-items-center",
-  # What a drag on the plot does. Kept as an explicit switch so a click meant to inspect a cell
-  # never starts a box, and a box meant to select never zooms.
+  # Switch for what a drag on the plot does
   tagAppendAttributes(
     div(style = "margin-bottom: -1rem;",
         radioButtons("mode", NULL, c("Inspect" = "inspect", "Select" = "select", "Draw" = "draw"),
@@ -591,8 +543,7 @@ toolbar <- div(
       selectizeInput("gene", "Gene", NULL,
                      options = list(placeholder = "none", allowEmptyOption = TRUE)),
       conditionalPanel("input.gene", numericInput("emin", "Colour only cells above", NA, step = 0.5)),
-      # One stray transcript looks like real expression; co-detection against an
-      # independence baseline is the question a single gene cannot answer
+      # Genes for the co-detection view, two or more
       selectizeInput("genes", "Gene combination (2+)", NULL, multiple = TRUE,
                      options = list(placeholder = "none", plugins = list("remove_button"))),
       conditionalPanel(
@@ -640,8 +591,7 @@ toolbar <- div(
       tags$button(type = "button", class = "btn btn-outline-secondary", onclick = "cosmxFig(1)", "+")),
   span(class = "text-muted small", textOutput("filter_summary", inline = TRUE)))
 
-# The card fills the height the Tables panel leaves. The plot's body and the legend's sidebar
-# scroll separately, so neither carries the other along
+# Builds a view's card, its plot and legend sidebar scrolling separately
 plot_card <- function(id) bslib::card(
   full_screen = TRUE, fill = TRUE,
   bslib::layout_sidebar(
@@ -673,8 +623,7 @@ ui <- bslib::page_sidebar(
       sprintf("input.cby == '%s'", LIN_COL),
       checkboxGroupInput("lin_methods", "Methods", LIN_M,
                          selected = intersect(c("HT", "KPMP"), LIN_M), inline = TRUE)),
-    # Raw is the correct scale for "is this cell positive?": normalization is library-size
-    # scaled, so one transcript in a shallow cell outranks one in a deep cell
+    # The expression scale, normalised or raw counts
     if (length(GENES) && !is.null(expr_raw))
       selectInput("escale", "Expression scale", c("Normalized" = "norm", "Raw counts" = "raw"),
                   "norm", selectize = FALSE),
@@ -689,8 +638,7 @@ ui <- bslib::page_sidebar(
     list(id = "view", header = toolbar),
     lapply(names(EMB), function(v) bslib::nav_panel(v, plot_card(VID[[v]]))))),
 
-  # Closed by default: the plot is the point, these are a reference. A click on the bar opens or
-  # closes them; dragging it gives the tables more room (up) or the plot (down)
+  # The Tables panel, closed at start, opened, closed and resized from its bar
   div(
     id = "cosmx_tables", class = "cosmx-tables",
     div(class = "cosmx-tables-bar", role = "button", tabindex = "0",
@@ -730,8 +678,7 @@ ui <- bslib::page_sidebar(
         bslib::nav_panel(
           "Marker evidence",
           div(class = "p-2",
-              # Cell type by default: immune_infiltrate spans T, NK, myeloid, B and plasma
-              # over 74 genes, so a B cell scores 1.00 on it
+              # Marker panels by cell type by default, or by compartment
               radioButtons("mkby", NULL, c("Cell type" = "cell_type",
                                            "Compartment" = "compartment"),
                            "cell_type", inline = TRUE)),
@@ -756,12 +703,7 @@ server <- function(input, output, session) {
     updateSelectizeInput(session, "genes", choices = GENES, server = TRUE)
   }
 
-  # Tick methods; every intersection among them that actually occurs becomes a colour.
-  # Two methods gives three: each alone and the pair. Cells no ticked method calls are NA,
-  # so they are drawn grey and never reach the legend -- a "not B" entry of 153,137 cells
-  # is not an annotation, it is the rest of the object.
-  # k methods gives at most 2^k - 1 levels, which is why the control is a tick list: the
-  # readable range is yours to choose rather than something the column decides for you.
+  # One level per combination of ticked methods that occurs, NA where none calls
   lin_vec <- reactive({
     h  <- LIN[[LIN_NM]]
     ms <- LIN_M[LIN_M %in% (input$lin_methods %||% character())]
@@ -771,17 +713,13 @@ server <- function(input, output, session) {
     seen <- setdiff(sort(unique(code)), 0)
     if (!length(seen)) return(factor(rep(NA_character_, nrow(h))))
     lbl  <- vapply(seen, function(k) paste(ms[bitwAnd(k, bit) > 0], collapse = "+"), "")
-    # singletons first, then pairs, then triples: the agreements sit after the methods
-    # they are agreements between, which is the order the legend is read in
+    # Orders single methods first, then pairs, then triples
     ord  <- order(vapply(seen, function(k) sum(bitwAnd(k, bit) > 0), 1L), seen)
     i <- match(code, seen)
     factor(ifelse(is.na(i), NA_character_, lbl[i]), levels = lbl[ord])
   })
 
-  # Every read of the colour column goes through here: it is a real column of `cells` for
-  # every annotation except the lineage one, which exists only for as long as the ticks do.
-  # Confidence belongs to the annotation being shown, so it appears with it rather than as a
-  # second column picker. Colouring by it is the "conf:" row in the gene list.
+  # The minimum confidence slider for an annotation with a score column
   output$conf_ui <- renderUI({
     sc <- score_of(input$cby)
     if (is.null(sc)) return(NULL)
@@ -812,14 +750,12 @@ server <- function(input, output, session) {
   zoom    <- reactiveValues(x = NULL, y = NULL)
   sel_ids <- reactiveVal(NULL)   # cell_IDs kept by "Filter cells to selected"
   mode    <- reactive(input$mode %||% "inspect")
-  # The last outline drawn: its view, the outline in that view's data coordinates (so it stays
-  # put through zooming) and the cells inside it
+  # The last outline drawn, with its view, data coordinates and the cells inside
   lasso   <- reactiveVal(NULL)
   # Each view's latest pixel-to-data mapping, read off its hover events
   hv_map  <- reactiveValues()
 
-  # Manual label edits, one batch per Assign so Undo steps back one action. Every row is kept in
-  # order: of a cell's edits the later one wins, by label_state.R's rules
+  # Manual label edits in order, one batch per Assign for Undo to drop
   batches <- reactiveVal(list())
   edits <- reactive({
     b <- batches()
@@ -828,8 +764,7 @@ server <- function(input, output, session) {
   })
   # The edits that still count, one or two rows per cell
   edits_now <- reactive(compact_overrides(edits()))
-  # Levels start from the cell types and new labels follow, so a label that arrives leaves the
-  # others in place
+  # Makes a label factor, cell type levels first and new labels after
   lab_factor <- function(v) {
     base <- if (is.null(BASE_LAB)) character() else levels(cells[[BASE_LAB]])
     factor(v, levels = c(base, setdiff(sort(unique(v[!is.na(v)])), base)))
@@ -840,8 +775,7 @@ server <- function(input, output, session) {
     lab_factor(apply_label_state(cells$cell_ID, cells$cell_ID,
                                  stats::setNames(base, cells$cell_ID), edits())$cell_type)
   })
-  # What annotate will write: each cell's cluster label from Tables > Cluster labels, then its
-  # Annotate edits
+  # The labels annotate will write, cluster labels with the Annotate edits on top
   live <- reactive({
     d <- cl_tab()
     lab <- stats::setNames(d$label, d$cluster)
@@ -871,14 +805,13 @@ server <- function(input, output, session) {
     if (spatial() && one != ALL_SAMPLES) k <- k & cells[[SAMP]] == one
     k
   })
-  # Greying 170,000 cells still draws them, and the grey is what you end up looking at.
-  # Dropping them is the only way to see the 200 that are left.
+  # The cells to draw, after sample, confidence, level, gene and selection filters
   keep <- reactive({
     k <- keep_s()
     cc <- score_of(input$cby)
     if (!is.null(cc) && (input$conf_min %||% 0) > 0)
       k <- k & !is.na(cells[[cc]]) & cells[[cc]] >= input$conf_min
-    # A subcluster embedding only holds its own parent's cells; the rest have no coordinates
+    # Keeps cells with coordinates in this view, one parent's on Subclusters
     ax <- emb_of(input$view)
     if (!is.null(ax) && all(ax %in% names(cells))) k <- k & !is.na(cells[[ax[1]]])
     if (length(input$keep_lv)) k <- k & cby_all() %in% input$keep_lv
@@ -904,7 +837,7 @@ server <- function(input, output, session) {
   })
   emat  <- reactive({
     m <- if (identical(input$escale, "raw") && !is.null(expr_raw)) expr_raw else expr
-    # a gene missing from the raw export would error on `[`; fall back rather than crash
+    # Falls back to normalised values for a gene missing from the raw export
     if (!is.null(gene()) && !gene() %in% rownames(m)) expr else m
   })
   # 2+ genes selected takes precedence over the single-gene view
@@ -927,8 +860,7 @@ server <- function(input, output, session) {
                         selected = "(show all)")
   })
 
-  # attach expression as a column rather than re-slicing per consumer: brushedPoints and
-  # the composition table then carry it for free, with no realignment step
+  # The kept cells, with the reactive columns and expression attached
   shown <- reactive({
     d <- cells[keep(), ]
     if (!is.null(LIN_COL)) d[[LIN_COL]] <- lin_vec()[keep()]
@@ -944,8 +876,7 @@ server <- function(input, output, session) {
                           function(j) paste0(gcombo()[j], ifelse(mm[j, ], "+", "-"))))
     } else if (!is.null(gene())) {
       d$.expr <- as.numeric(emat()[gene(), keep()])
-      # NA rather than a second layer: scale_colour_gradientn paints NA with na.value,
-      # so below-threshold cells go grey and the gradient still spans only the kept ones
+      # Values at or below the minimum go NA and are drawn grey
       if (isTruthy(input$emin) && !is.na(input$emin)) d$.expr[d$.expr <= input$emin] <- NA_real_
     }
     if (stacked()) d <- add_stack(d)
@@ -953,17 +884,13 @@ server <- function(input, output, session) {
   })
   hl <- reactive(if (length(input$hl_lv)) input$hl_lv else NULL)
 
-  # Tissue is always drawn as ONE panel with the samples stacked vertically, not as facets.
-  # facet_wrap + coord_fixed forces every panel to the tallest sample's y range, so a flat
-  # tissue sits in 14% of its box; stacking packs them and keeps brush and zoom single-valued.
+  # True when Spatial draws the samples stacked in one panel
   stacked <- reactive(spatial() && !is.null(SAMP) && all(c("x_rel", "y_abs") %in% names(cells)))
   axes <- reactive({
     if (stacked()) c(".sx", ".sy") else emb_of(input$view)
   })
 
-  # Band geometry, first sample at the top. Built from the sample selection only, so filters
-  # never reflow the layout. Each band has a label row above it: names inside the panel
-  # instead of on a y axis, which narrowed the panel and left coord_fixed dead space.
+  # Each sample's band and label row, first on top, from the sample choice only
   bands <- reactive({
     req(stacked())
     d  <- cells[keep_s(), ]
@@ -1009,8 +936,7 @@ server <- function(input, output, session) {
                       selected = if (input$cby %in% ch) input$cby else ch[1])
   }, ignoreInit = TRUE)
 
-  # Level pickers follow Colour by; a level name from another column would filter to nothing
-  # A highlight asked for before its Colour by is in place waits here (Cluster labels panel)
+  # A highlight waiting for its Colour by, and level pickers that follow Colour by
   pend_hl <- reactiveVal(NULL)
   observeEvent(cby_all(), {
     lv <- levels(droplevels(cby_all()))
@@ -1032,10 +958,7 @@ server <- function(input, output, session) {
   # The page only hands scroll gestures to the plot while zoomed
   observe(session$sendCustomMessage("cosmx-zoomed", zoomed()))
 
-  # A zoomed Spatial view is a screen-sized viewport, not the full-height stack: it pans in
-  # every direction and each re-render draws ~10x fewer pixels
-  # The height of the plot's card body, measured in the page (ZOOM_JS), so a view fits the room
-  # the window and the Tables panel leave it
+  # The plot's card body height, measured in the page by ZOOM_JS
   avail_h  <- reactive(max(220, input$cosmx_avail %||% 600))
   view_h   <- reactive(avail_h())
   legend_px <- reactive(if (is.null(gene()) && is.null(gcombo())) 0 else 90)
@@ -1069,8 +992,7 @@ server <- function(input, output, session) {
   observeEvent(list(input$samples, input$one_sample, input$layout, input$sub_parent), reset_zoom(),
                ignoreInit = TRUE)
 
-  # Zoom about the cursor. dy > 0 (scroll down, pinch in) zooms out. Zooming out past the
-  # full width returns to the overview.
+  # Zooms about the cursor, out for dy > 0, back to the overview past full width
   zoom_by <- function(dy, hv) {
     fr <- full_range()
     f  <- exp(max(-2, min(2, dy * 0.002)))
@@ -1191,9 +1113,7 @@ server <- function(input, output, session) {
   pal_hl <- reactive({
     f <- cby_all()
     p <- pal_for(f)
-    # Subclusters take their colours from the ones in view: one parent's, or those kept by the
-    # level filter. Spread over all 134 of sub_res0.3 the hues sit ~3 degrees apart and a
-    # parent's dozen came out as one colour. No parent has more than 24.
+    # Spreads pal_wide over the subclusters in view only
     if (input$cby %in% SUB_COLS) {
       k  <- !is.na(f)
       ax <- emb_of(input$view)
@@ -1202,8 +1122,7 @@ server <- function(input, output, session) {
       lv <- levels(droplevels(f[k]))
       if (length(lv) <= length(pal_wide)) p[lv] <- pal_wide[seq_along(lv)]
     }
-    # Labels arrive one Set at a time. pal_n spreads its hues over however many levels there
-    # are, so each new label would recolour the rest; a colour per label does not.
+    # A fixed colour per label on label columns
     if (input$cby %in% LAB_COLS) p <- pal_labels(levels(f))
     if (!is.null(hl())) p[!names(p) %in% hl()] <- GREY
     p
@@ -1228,8 +1147,7 @@ server <- function(input, output, session) {
              format(n_low, big.mark = ","))))
   }
 
-  # Cells whose label in this colouring is a low-confidence guess, which the figures stripe and
-  # the views here slash: only for the display labels, whose guesses are what is drawn
+  # Finds low-confidence cells in a display-label colouring, slashed in the views
   low_cells <- function(col) {
     if (!is.null(DISPLAY_COL) && identical(col, DISPLAY_COL)) return(live()$label_confidence == "low")
     if (identical(col, "cell_type_display")) {
@@ -1240,8 +1158,7 @@ server <- function(input, output, session) {
   }
 
   size_ui <- function(id) {
-    # Draw mode hands every drag to the outline script, so it has no box, click or double-click.
-    # In Inspect the box zooms as soon as the drag pauses, so it waits longer than in Select.
+    # Draw mode has no box, click or double-click, and Inspect's box waits longer
     md <- mode()
     out <- function(h) tagAppendAttributes(
       plotOutput(paste0("plot_", id), height = h,
@@ -1258,23 +1175,18 @@ server <- function(input, output, session) {
       return(out(paste0(min(20000, ceiling(n_panels() / 2) * round(base_w() / 2 * 0.8) + 40), "px")))
     }
     if (zoomed()) return(out(paste0(view_h(), "px")))
-    # coord_fixed() pins the aspect, so the height is exactly what the panel needs at this
-    # width: 24 px of plot margin, plus the colour bar when a gene view puts one on top
+    # Height for the fixed aspect at this width, plus 24 px margin and any colour bar
     fr  <- full_range()
     asp <- diff(fr$y) / max(1e-9, diff(fr$x))
     leg <- legend_px()
-    # One sample fits the window; All samples is a tall stack the page scrolls through
+    # Caps the height at the window for one sample, at 20000 px for All samples
     cap <- if (identical(input$one_sample %||% ALL_SAMPLES, ALL_SAMPLES)) 20000 else avail_h()
     out(paste0(max(220, min(cap, round((base_w() - 24) * asp + 24 + leg))), "px"))
   }
 
-  # geom_point below RASTER_ABOVE cells, scattermore above it. Measured on this bundle,
-  # geom_point beat scattermore at every canvas size tried, by 5-16x:
-  #   126k cells, 1188x792 px   scatter 2.35 s   point 0.34 s
-  #   126k cells, 1320x3300 px  scatter 5.82 s   point 0.48 s
-  # scattermore is kept only as a guard for datasets far larger than this one.
+  # The cell count where geom_scattermore takes over from geom_point
   RASTER_ABOVE <- 400000L
-  PT <- 1   # point size; points are only used for the embeddings
+  PT <- 1   # point size for the embeddings
   # Figure size, from the page's Cmd -/+ and its buttons: scales the plot's text, points and lines
   fig_s <- reactive(input$fig_scale %||% 1)
 
@@ -1294,7 +1206,7 @@ server <- function(input, output, session) {
       d[[xy[2]]] >= zoom$y[1] - my & d[[xy[2]]] <= zoom$y[2] + my, , drop = FALSE]
   })
 
-  # Tissue is always drawn as segmented cells; ~2.3 s for all 2.7M vertices at full zoom-out
+  # True on Spatial when cell outlines are loaded, to draw them as polygons
   use_poly <- reactive(!is.null(poly) && spatial())
 
   # Hoisted out of renderPlot: a 2.7M-row index per frame is the most expensive step here
@@ -1315,9 +1227,7 @@ server <- function(input, output, session) {
     xy <- axes()
     s <- fig_s()
 
-    # Each mode below picks the cells in draw order (d), the column that colours them (col)
-    # and a scale; the geom is chosen once, after. Scales serve colour AND fill, so polygons
-    # follow the gene views too -- they used to fill by Colour by whatever else was set.
+    # Each mode sets the cells d, colour column col and a colour and fill scale
     both <- c("colour", "fill")
     low <- NULL
     if (!is.null(gcombo()) && identical(input$gmode, "pattern") &&
@@ -1328,10 +1238,10 @@ server <- function(input, output, session) {
       nplus <- sapply(lv, function(x) lengths(regmatches(x, gregexpr("\\+", x))))
       hp <- input$hlpat %||% "(show all)"
       cols <- if (hp %in% lv) {
-        # one combination in red, everything else grey -- the "show me CD79A+/SDC1-" view
+        # The picked combination in red, the rest grey
         stats::setNames(ifelse(lv == hp, "#D7263D", "#E4E9E7"), lv)
       } else {
-        # all-negative stays background grey; the rest get separable hues
+        # All-negative in background grey, the rest in separate hues
         stats::setNames(c("#E4E9E7",
                           grDevices::colorRampPalette(
                             c("#4C9BE8", "#00A870", "#F2A93B", "#D7263D"))(length(lv) - 1)
@@ -1359,16 +1269,13 @@ server <- function(input, output, session) {
                                          all = c("not all", "all"),
                                          any = c("none", "any"),
                                          as.character(lv)))
-      # 0 gets a near-background grey so it cannot be mistaken for expression; the ramp
-      # starts at the first real colour. Without this, "1 of 3" reads as bright green and
-      # looks like a hit.
+      # Background grey for zero, none or not all, colours for the rest
       cols <- switch(input$gmode %||% "count",
                      all = c("not all" = "#E4E9E7", "all" = "#04251C"),
                      any = c("none"    = "#E4E9E7", "any" = "#00A870"),
                      stats::setNames(c("#E4E9E7", grDevices::colorRampPalette(pal_seq[-1])(n)),
                                      as.character(lv)))
-      # counts in the legend: "how many cells is this colour" is the first question asked
-      # of this plot, and reading it off the picture is exactly how you get it wrong
+      # Cell counts in the legend labels
       cnt  <- table(factor(d$.combo, levels = names(cols)))
       labs <- stats::setNames(sprintf("%s  (%s)", names(cols),
                                       format(as.integer(cnt[names(cols)]), big.mark = ",")),
@@ -1406,8 +1313,7 @@ server <- function(input, output, session) {
 
     p <- if (use_poly()) {
       pd <- poly_sub()
-      # group = the cell's row in d: GeomPolygon draws in group order, so expressing and
-      # highlighted cells land on top exactly as they do as points
+      # Groups each outline by its cell's row in d, keeping the points' draw order
       pd$.g <- match(pd$i, match(d$cell_ID, cells$cell_ID))
       pd <- pd[!is.na(pd$.g), , drop = FALSE]
       pd$.v <- d[[col]][pd$.g]
@@ -1473,7 +1379,7 @@ server <- function(input, output, session) {
     # Embedding axes have no metric meaning, so they stretch to fill the panel
     if (input$facet != "none")
       p <- p + facet_wrap(vars(.data[[input$facet]]), ncol = min(2L, n_panels()))
-    # Zooming changes tick label widths ("-20" -> "-2.5"); padding pins the panel edge
+    # Pads tick labels to a fixed width, keeping the panel edge still on zoom
     padlab <- function(v) ifelse(is.na(v), "", formatC(v, width = 6, format = "g"))
     p + scale_x_continuous(labels = padlab) + scale_y_continuous(labels = padlab) +
       coord_cartesian(xlim = zoom$x, ylim = zoom$y) +
@@ -1554,8 +1460,7 @@ server <- function(input, output, session) {
       choices = c("", union(levels(edit_vec()), sort(setdiff(edits()$label, KEEP_LAB))), KEEP_LAB),
       selected = isolate(input$ann_label)), ignoreInit = TRUE)
 
-    # The run's edits: read at start, saved as they are made. Cut to the rows that count, so a
-    # cell relabelled often stays one or two rows
+    # Loads the run's saved label edits, then saves the compacted edits on each change
     if (file.exists(OV_FILE)) {
       d0 <- tryCatch(read_overrides(OV_FILE), error = function(e) {
         showNotification(conditionMessage(e), type = "error", duration = NULL); NULL })
@@ -1581,7 +1486,7 @@ server <- function(input, output, session) {
     output[[paste0("legend_", id)]] <- renderUI(legend_ui())
     output[[paste0("cellinfo_", id)]] <- renderUI(cell_info_ui(id))
 
-    # Click a cell to inspect it; clicking empty space clears the panel
+    # A click picks the nearest cell to inspect, or clears the panel on empty space
     observeEvent(input[[paste0("ck_", id)]], {
       hit <- nearPoints(vis(), input[[paste0("ck_", id)]], axes()[1], axes()[2],
                         threshold = 40, maxpoints = 1)
@@ -1591,8 +1496,7 @@ server <- function(input, output, session) {
     output[[paste0("ui_", id)]]     <- renderUI(size_ui(id))
     output[[paste0("plot_", id)]]   <- renderPlot(build_plot(id), res = 112)
 
-    # A box in Select mode or an outline in Draw mode pops up the selection bar. Filtering
-    # narrows every view to those cells; Assign gives them the label chosen in Annotate.
+    # The selection bar for a Select box or Draw outline, with Filter and Assign
     output[[paste0("selbar_", id)]] <- renderUI({
       lz <- lasso()
       drawn <- !is.null(lz) && lz$id == id
@@ -1625,7 +1529,7 @@ server <- function(input, output, session) {
         session$resetBrush(br)
       }
     })
-    # Double-click inside a Select box zooms to it; anywhere else resets
+    # Double-click inside a Select box zooms to it, anywhere else resets the zoom
     observeEvent(input[[paste0("dbl_", id)]], {
       b <- input[[br]]
       if (is.null(b)) return(reset_zoom())
@@ -1663,21 +1567,14 @@ server <- function(input, output, session) {
   })
 
   # --- marker evidence ------------------------------------------------------------------
-  # Fold enrichment of each marker panel, per level of Colour by, for the CURRENT selection.
-  # The background is the sample filter only, never the legend filter: scored against itself
-  # a filtered selection is enriched 1.0 and the table says nothing.
-  # One sparse pass. obs = cells in level L detecting gene g, summed over the panel;
-  # exp = the same count predicted from background rates within depth deciles. Aggregating
-  # counts before dividing, rather than averaging per-gene folds, keeps a gene that is near
-  # zero in the background from dominating the panel.
+  # Each marker panel's fold enrichment per level, over the sample-filtered cells
   mk_eval <- reactive({
     req(length(MK_SET), !is.null(expr_raw), input$cby)
     pan <- MK_SET[[input$mkby %||% "cell_type"]]
     req(length(pan))
     d <- shown(); req(nrow(d) > 0)
     f <- droplevels(factor(d[[input$cby]]))
-    # the lineage column is NA for cells no ticked method calls; they are canvas, not a
-    # group, and fac2sparse has no column to put them in
+    # Drops NA cells, the ones no ticked lineage method calls
     ok <- !is.na(f); d <- d[ok, , drop = FALSE]; f <- droplevels(f[ok])
     req(nrow(d) > 0, nlevels(f) > 0)
     i  <- match(d$cell_ID, cells$cell_ID)
@@ -1738,8 +1635,7 @@ server <- function(input, output, session) {
     out
   })
 
-  # Poisson-binomial: exact P(exactly k of n independent events), by convolution.
-  # n is the number of picked genes, so this is trivially small.
+  # Exact Poisson-binomial probabilities of 0 to n hits, by convolution
   pb_dist <- function(p) { d <- 1; for (q in p) d <- c(d, 0) * (1 - q) + c(0, d) * q; d }
 
   output$combo_hdr <- renderText({
@@ -1750,10 +1646,7 @@ server <- function(input, output, session) {
                  if (is.null(brush())) "" else " (brushed)")
   })
 
-  # The whole point of this panel. "N cells express all three" is meaningless on its own:
-  # with markers detected in a few percent of cells, chance co-detection is common, and it
-  # rises with sequencing depth. So compare against a baseline computed WITHIN depth
-  # deciles, which holds depth fixed and destroys only the cell-level association.
+  # Cells expressing at least k genes against a chance baseline within depth deciles
   output$combo_tbl <- renderTable({
     req(!is.null(gcombo()))
     d <- picked(); req(nrow(d) > 20)
@@ -1790,15 +1683,13 @@ server <- function(input, output, session) {
                             rep("", n)))[-1, ]
   })
 
-  # The clustering whose per-cluster tables go with the colouring: the colouring itself, or for a
-  # label column the clustering picked in Cluster labels
+  # Label columns, whose tables follow the clustering picked in Cluster labels
   label_cols <- c(LIVE_COLS, BASE_LAB, EDIT_COL, "cell_type_display")
   # Coloured by a label column: the tables show the clustering picked in Cluster labels
   on_labels <- reactive((input$cby %||% "") %in% label_cols && length(CL_BASES) > 0)
   tables_basis <- reactive(
     if (on_labels()) input$cl_basis %||% CL_DEFAULT else basis_of(input$cby %||% ""))
-  # Its clusters to show: the highlighted levels, or for a label column the clusters labelled
-  # with them in Cluster labels
+  # The clusters to show, the highlighted levels or the clusters given those labels
   tables_levels <- reactive({
     h <- hl(); if (is.null(h)) return(NULL)
     if (on_labels()) { d <- cl_tab(); d$cluster[d$label %in% h] } else h
@@ -1806,8 +1697,7 @@ server <- function(input, output, session) {
   tri <- reactive(DIAG[[tables_basis()]])
 
   # --- cluster labels -----------------------------------------------------------------
-  # This session's edits per clustering, as named vectors cluster_id -> label. Each Set saves the
-  # clustering's labels to the labels folder, where annotate reads them
+  # This session's label edits per clustering, each Set saving them for annotate
   cl_edits <- reactiveVal(list())
   # The clustering cell_type comes from, as cluster_basis.txt names it
   chosen <- reactiveVal(CHOSEN0)
@@ -1848,8 +1738,7 @@ server <- function(input, output, session) {
       d$score       <- round(t$best_score[i], 2)
       d$top_markers <- t$top_markers[i]
     }
-    # The majority share only means something when the colour labels did not come from this
-    # clustering; the marker check is the independent one
+    # Flags for review a share under 80%, no label or a best guess outside LABEL_OK
     guess <- if (is.null(d$best_guess)) rep("", nrow(d)) else ifelse(is.na(d$best_guess), "", d$best_guess)
     off <- d$label %in% names(LABEL_OK) & nzchar(guess) &
       !mapply(function(l, g) g %in% LABEL_OK[[l]], d$label, guess)
@@ -1895,8 +1784,7 @@ server <- function(input, output, session) {
     v[input$cl_pick] <- lab
     e[[b]] <- v
     cl_edits(e)
-    # Saving a second clustering's labels must not leave annotate without a choice: name the one
-    # it was using first, or this one when there was none
+    # Sets annotate's clustering if unset, to the only saved one or this one
     if (is.null(chosen())) save_basis(if (length(LABS_SAVED) == 1L) names(LABS_SAVED) else b)
     d <- cl_tab()
     ok <- tryCatch({
@@ -1907,8 +1795,7 @@ server <- function(input, output, session) {
     if (!ok) showNotification(paste("Could not save", cl_file(b)), type = "error")
   })
 
-  # Drops this session's edits to this clustering: its saved labels go back to what they were at
-  # start, or away when there were none
+  # Discards this session's edits to the clustering, restoring its labels at start
   observeEvent(input$cl_discard, {
     e <- cl_edits(); b <- input$cl_basis
     e[[b]] <- NULL; cl_edits(e)

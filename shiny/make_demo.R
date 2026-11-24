@@ -1,5 +1,4 @@
-# Synthetic CosMx-shaped data so the explorer runs without the real object.
-# 126k cells, 4 samples, 2 groups, 3 clustering resolutions, auto + manual annotation.
+# Makes CosMx-like demo data for the explorer, 126k cells in 4 samples
 set.seed(1)
 
 N   <- 126000
@@ -20,8 +19,7 @@ dk <- cbind(runif(K, 400, 4600), runif(K, 400, 4600))
 x  <- dk[k, 1] + rnorm(N, 0, 260)
 y  <- dk[k, 2] + rnorm(N, 0, 260)
 
-# Resolutions are SHUFFLED, not nested-in-order: cluster 3 at res 0.3 has nothing
-# to do with cluster 3 at res 0.8. That is how real re-clustering behaves.
+# Three resolutions from merged subpopulations, ids shuffled at each
 relabel <- function(v) { m <- sample(sort(unique(v))); factor(m[match(v, sort(unique(v)))]) }
 res_0.8 <- relabel(k)
 res_0.5 <- relabel(ceiling(k / 2))
@@ -45,7 +43,7 @@ cells <- data.frame(
   res_0.3, res_0.5, res_0.8, anno_auto, anno_manual
 )
 
-# 12-vertex cell boundaries; i indexes back into cells (cheaper than a join)
+# 12-vertex cell boundaries, i the row of the cell in cells
 V   <- 12
 ang <- seq(0, 2 * pi, length.out = V + 1)[-(V + 1)]
 rad <- 7 + runif(N, 0, 3)

@@ -1,6 +1,5 @@
 #!/usr/bin/env Rscript
-## Re-cluster each cluster of one basis column on its own embedding. Adds one column and
-## changes nothing else, so annotate can run off the subclusters instead ##
+## Re-clusters each cluster of the basis on its own embedding, as one new column ##
 a <- commandArgs(trailingOnly = TRUE)
 arg <- function(k, d = "") {
   i <- which(a == paste0("--", k))
@@ -29,6 +28,7 @@ if (!nzchar(opt$basis)) {
 }
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -56,8 +56,7 @@ if (!opt$basis %in% names(pd)) {
   )
 }
 
-## The new column carries its basis, so two runs never collide. Subclustering a subcluster
-## column adds a level: sub_res0.3 -> sub_res0.3_l2, whose 3.5 splits into 3.5.1, 3.5.2 ##
+## Column name from the basis, sub_res0.3 for leiden_clus_res0.3, then _l2, _l3 per level ##
 out_col <- if (startsWith(opt$basis, "sub_")) {
   lv <- suppressWarnings(as.integer(sub("^.*_l([0-9]+)$", "\\1", opt$basis)))
   if (is.na(lv)) paste0(opt$basis, "_l2") else sub("_l[0-9]+$", paste0("_l", lv + 1L), opt$basis)
@@ -269,8 +268,7 @@ sub_one <- function(cl) {
   )
 }
 
-## Build on an existing column so a second run adds its cluster instead of dropping the first.
-## Its earlier parents' embeddings stay too, unless this run redoes that parent ##
+## Builds on an existing out_col and its UMAPs, keeping earlier runs' clusters ##
 sub_v <- if (out_col %in% names(pd)) as.character(pd[[out_col]]) else basis_v
 umaps <- list()
 for (uc in grep(paste0("^", gsub(".", "[.]", out_col, fixed = TRUE), "_c.+_UMAP[12]$"),
@@ -352,7 +350,7 @@ summ <- as.data.frame(
   table(sd[[out_col]], dnn = "subcluster"),
   responseName = "n_cells"
 )
-## The parent is the subcluster one level up: 3.1 -> 3, 3.5.1 -> 3.5 ##
+## Each subcluster's parent one level up, 3 for 3.1 and 3.5 for 3.5.1 ##
 summ$parent <- sub("\\.[^.]+$", "", as.character(summ$subcluster))
 if ("sample_id" %in% names(sd)) {
   mix <- table(sd[[out_col]], sd$sample_id)

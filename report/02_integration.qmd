@@ -1,0 +1,148 @@
+---
+title: "02 - Integration"
+subtitle: "The genes and the embedding the clustering uses"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+ig_f <- find_tab("^integrate_summary\\.csv$")
+ig <- read_files(ig_f)
+pv_f <- find_tab("^dims_pc_variance\\.csv$")
+de_f <- find_tab("^dims_estimate\\.csv$")
+gm_f <- find_tab("^genes_methods\\.csv$")
+```
+
+The merged counts are normalised, the PCA runs on the genes `hvg_method` picks together with the marker panel, and Harmony corrects the batch columns that vary. The discovery checks then ask how many PCs the data supports and how the gene-selection methods compare.
+
+```{r}
+page_top(
+  stages = c("discover", "checks"),
+  Input = "The merged object of the cells that passed QC.",
+  Method = "Normalisation with the scale factor, the genes picked by <code>hvg_method</code> unioned with the marker panel, PCA, and Harmony over the <code>batch_column</code> entries that vary.",
+  Checks = "With <code>checks_dims</code>, a 100-PC PCA and the intrinsic dimension with noise at both ends of each distance. With <code>checks_genes</code>, each gene-selection method on sampled cells against the run's.",
+  Output = "The embedding for clustering, and the tables in <code>tables/02_integration</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Summary" = function() {
+    if (is.null(ig)) return(missing_note("Not integrated yet."))
+    r <- ig[1]
+    g <- function(k) if (k %in% names(r)) as.character(r[[k]]) else ""
+    tagList(
+      plain_table(data.table(
+        Setting = c("Scale factor", "Median library size", "Variable genes", "Genes in the PCA",
+                    "Batch columns asked for", "Batch columns used", "Their levels", "Batch correction",
+                    "Clustering embedding", "Dimensions"),
+        Value = c(g("scalefactor"), fmt_n(r$lib_median), fmt_n(r$n_hvg), fmt_n(r$n_pca_feats),
+                  g("batch_requested"), g("batch_used"), g("batch_levels"),
+                  if (isTRUE(as.logical(r$batch_corrected))) "Harmony" else "none", g("reduction"), g("dims"))
+      )),
+      csv_links(ig_f)
+    )
+  },
+  "Before and after batch correction" = function() {
+    cols <- c("batch", "slide_id", "sample_id", "treatment", "timepoint")
+    if (bundle_has(c("UMAPpre1", "UMAPpre2", "UMAP1", "UMAP2"))) {
+      cols <- cols[vapply(cols, function(cc) bundle_has(cc), logical(1))]
+      items <- lapply(cols, function(cc) {
+        rfig(paste0("umap_batch_", cc), bundle_file(), function() {
+          d <- bundle_cells()
+          vals <- sample_colours(sample_levels(as.character(d[[cc]])))
+          a <- umap_plot(d, cc, values = vals, x = "UMAPpre1", y = "UMAPpre2") + labs(title = "Before batch correction")
+          b <- umap_plot(d, cc, values = vals) + labs(title = "After batch correction")
+          (a + b) + plot_layout(guides = "collect") &
+            theme(plot.title = element_text(face = "bold", size = 11, hjust = 0.5))
+        }, 12, 5.5)
+      })
+      return(rpicker(stats::setNames(items, paste("By", gsub("_", " ", cols)))))
+    }
+    post <- figs("03_clustering", "^umap_by_.+\\.png$", FALSE)
+    pre <- figs("03_clustering", "^umap_pca_by_.+\\.png$", FALSE)
+    tagList(
+      tags$p(class = "table-note", "No app bundle yet, so these are the pipeline's UMAPs."),
+      tabs(list(
+        `After batch correction` = gallery(post, nice(post, "umap_by_"), wide = TRUE, empty = NULL),
+        `Before batch correction` = gallery(pre, nice(pre, "umap_pca_by_"), wide = TRUE, empty = NULL)
+      ))
+    )
+  },
+  "Variance per PC" = function() {
+    pv <- read_files(pv_f)
+    if (is.null(pv)) {
+      return(gallery_named("02_integration", c("scree.png" = "Variance per PC"), wide = TRUE, empty = "No scree plot yet."))
+    }
+    de <- read_files(de_f)
+    dims <- if (!is.null(de)) de$dims_use[1] else NA
+    fig <- rfig("dims_pc_variance", c(pv_f, de_f), function() {
+      n <- nrow(pv)
+      g <- ggplot(pv, aes(pc, variance)) +
+        annotate("rect", xmin = n - 19.5, xmax = n + 0.5, ymin = min(pv$variance), ymax = Inf, alpha = 0.15, fill = TEAL) +
+        geom_point(colour = TEAL, size = 1.4) +
+        scale_y_log10() +
+        labs(x = "PC", y = "Variance") +
+        theme_report()
+      if (is.finite(dims)) g <- g + geom_vline(xintercept = dims, linetype = "dashed", colour = WARM)
+      g
+    }, 7, 4)
+    rgallery(list(`Variance per PC. The shaded PCs set the noise, the dashed line marks the dimensions used` = fig), wide = TRUE)
+  },
+  "How many PCs the data supports" = function() {
+    de <- read_files(de_f)
+    if (is.null(de)) return(missing_note("Not checked in this run. checks_dims runs it."))
+    both <- de[noise == "both_ends"]
+    fig <- rfig("dims_estimate", de_f, function() {
+      d <- copy(de)[, noise := factor(ifelse(noise == "both_ends", "noise at both ends", "noise at one end"))]
+      ggplot(d, aes(factor(k), estimate, colour = noise, group = noise)) +
+        geom_hline(yintercept = de$dims_use[1], linetype = "dashed", colour = "grey50") +
+        geom_line(linewidth = 0.6) +
+        geom_point(size = 2.2) +
+        scale_colour_manual(values = c(`noise at both ends` = TEAL, `noise at one end` = WARM), name = NULL) +
+        labs(x = "Neighbours (k)", y = "Intrinsic dimension") +
+        theme_report()
+    }, 6, 3.6)
+    tagList(
+      tags$p(sprintf("With noise at both ends of each distance, the data supports %s dimensions at k = %s. The run uses %s.",
+                     paste(both$estimate, collapse = ", "), paste(both$k, collapse = ", "), de$dims_use[1])),
+      rgallery(list(`Intrinsic dimension by neighbours, the dashed line at the dimensions used` = fig), wide = TRUE),
+      plain_table(de),
+      tags$p(class = "table-note", "The noise sd comes from the last 20 PCs. one_end is the same estimate with noise on one end only."),
+      csv_links(de_f)
+    )
+  },
+  "Gene selection compared" = function() {
+    gm <- read_files(gm_f)
+    if (is.null(gm)) return(missing_note("Not checked in this run. checks_genes runs it."))
+    fig <- rfig("genes_methods", gm_f, function() {
+      m <- intersect(c("jaccard_vs_run", "markers_kept_pct", "mean_cos", "shared_dims"), names(gm))
+      long <- melt(gm[, c("method", m), with = FALSE], id.vars = "method", variable.name = "measure")
+      long[, measure := factor(measure, m, c("Jaccard with the run's genes", "Markers kept (%)", "Mean PCA cosine", "Shared PCA directions")[match(m, c("jaccard_vs_run", "markers_kept_pct", "mean_cos", "shared_dims"))])]
+      long[, method := factor(method, rev(gm$method))]
+      ggplot(long, aes(value, method)) +
+        geom_col(fill = TEAL, width = 0.7) +
+        facet_wrap(~measure, scales = "free_x", nrow = 1) +
+        labs(x = NULL, y = NULL) +
+        theme_report()
+    }, 11, 1.4 + 0.4 * nrow(gm))
+    tagList(
+      tags$p("Each method's genes on the sampled cells, against the run's. Shared dimensions are PCA directions with a cosine of 0.9 or more to the run's. The markers each method leaves out are in the full table."),
+      rgallery(list(`Each gene-selection method against the run's` = fig), big = TRUE),
+      hits_table(gm[, setdiff(names(gm), "markers_dropped"), with = FALSE], csv = gm_f),
+      tags$p(class = "table-note", "Each method's gene list, for a rerun with --hvg_method file --hvg_file:"),
+      csv_links(find_tab("^genes_.+\\.txt$"))
+    )
+  },
+  ".pipeline" = function() {
+    pipeline_figures(c(figs("02_integration"), figs("03_clustering", "^umap_(pca_)?by_.+\\.png$", FALSE)))
+  },
+  "Parameters" = function() {
+    tagList(
+      params_table(c("batch_column", "batch_correct", "scalefactor", "n_hvgs", "hvg_method", "n_pcs", "dims_use"), "discover"),
+      params_table(c("checks_cells", "checks_dims", "checks_genes"), latest_stage(c("discover", "checks")))
+    )
+  }
+)))
+```

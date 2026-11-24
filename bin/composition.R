@@ -21,6 +21,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -61,8 +62,7 @@ ss[,
 ]
 ss[!nzchar(subject), subject := NA_character_]
 
-## One row per sample and cell type, zeros included. Untyped labels count towards a sample's
-## cells but not towards the typed shares, so a change in their share cannot move the rest ##
+## Cells per sample and cell type, zeros kept, with shares of all and typed cells ##
 tab <- as.data.table(table(
   sample_id = pd[[opt$sample_col]],
   cell_type = pd[[opt$celltype_column]]
@@ -82,8 +82,7 @@ tab <- merge(
   by = "sample_id"
 )
 
-## Each level against the baseline, inside each group. A handful of subjects per group is too
-## few for a test, so the change is per subject. Half a cell keeps zeros finite ##
+## Change from baseline per subject, inside each group ##
 chg <- rbindlist(lapply(unique(tab$group), function(g) {
   s <- tab[group == g & !is.na(subject) & typed]
   base <- s[level == opt$compare_baseline]

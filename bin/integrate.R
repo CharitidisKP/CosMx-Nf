@@ -11,6 +11,8 @@ opt <- list(
   markers = arg("markers"),
   scalefactor = arg("scalefactor", "auto"),
   n_hvgs = as.integer(arg("n_hvgs", "4000")),
+  hvg_method = arg("hvg_method", "variance"),
+  hvg_file = arg("hvg_file"),
   n_pcs = as.integer(arg("n_pcs", "50")),
   batch_column = arg("batch_column"),
   batch_correct = arg("batch_correct", "auto"),
@@ -20,6 +22,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -27,6 +30,9 @@ suppressPackageStartupMessages({
   library(scran)
   library(ggplot2)
 })
+## The helpers sit beside this script ##
+bin <- dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1]))
+source(file.path(bin, "gene_selection.R"))
 dir.create(opt$outdir, recursive = TRUE, showWarnings = FALSE)
 set.seed(opt$seed)
 
@@ -55,29 +61,6 @@ sf <- if (opt$scalefactor == "auto") lib_med else as.numeric(opt$scalefactor)
 merged <- normalizeGiotto(merged, feat_type = "rna", scalefactor = sf)
 merged <- addStatistics(merged, feat_type = "rna")
 
-## Top HVGs unioned with the canonical panel, so markers cannot be ranked out ##
-nm <- as.matrix(
-  getExpression(
-    merged,
-    feat_type = "rna",
-    values = "normalized",
-    output = "matrix"
-  )
-)
-dec <- suppressWarnings(scran::modelGeneVar(nm))
-hvf <- suppressWarnings(scran::getTopHVGs(dec, n = opt$n_hvgs))
-canon <- unique(read.csv(opt$markers)$gene)
-pca_feats <- union(hvf, intersect(canon, rownames(nm)))
-rm(nm)
-
-merged <- runPCA(
-  merged,
-  feat_type = "rna",
-  feats_to_use = pca_feats,
-  ncp = opt$n_pcs,
-  name = "pca"
-)
-
 ## batch_column is a comma separated list. Drop any entry that is absent or constant ##
 pd <- pDataDT(merged)
 bvars <- trimws(strsplit(opt$batch_column, ",")[[1]])
@@ -100,8 +83,34 @@ if (length(use) < length(have)) {
   )
 }
 
-## A solo object has one level of everything, so it falls back to pca.
-## cluster.R reads reduction.txt rather than assuming harmony ##
+## Genes by hvg_method, with the canonical panel added so markers stay in ##
+nm <- as.matrix(
+  getExpression(
+    merged,
+    feat_type = "rna",
+    values = "normalized",
+    output = "matrix"
+  )
+)
+blk <- if (length(use)) {
+  interaction(as.list(pd[match(colnames(nm), cell_ID), ..use]), drop = TRUE)
+} else {
+  NULL
+}
+hvf <- select_genes(nm, opt$hvg_method, opt$n_hvgs, block = blk, gene_file = opt$hvg_file)
+canon <- unique(read.csv(opt$markers)$gene)
+pca_feats <- union(hvf, intersect(canon, rownames(nm)))
+rm(nm)
+
+merged <- runPCA(
+  merged,
+  feat_type = "rna",
+  feats_to_use = pca_feats,
+  ncp = opt$n_pcs,
+  name = "pca"
+)
+
+## Harmony if batch_correct allows and a batch column varies, else pca ##
 do_bc <- switch(
   tolower(opt$batch_correct),
   "true" = TRUE,
@@ -147,6 +156,7 @@ write.csv(
   data.frame(
     scalefactor = sf,
     lib_median = lib_med,
+    hvg_method = opt$hvg_method,
     n_hvg = length(hvf),
     n_pca_feats = length(pca_feats),
     batch_requested = opt$batch_column,

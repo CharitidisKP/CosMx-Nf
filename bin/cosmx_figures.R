@@ -1,8 +1,4 @@
-## The pipeline's figure style: one pinned colour and a display name per label
-## (assets/label_colours.csv), immune cells drawn last, low-confidence labels striped, tissue
-## maps drawn from the cell outlines with the legend on the right and its counts, 600 dpi PNGs
-## with a vector PDF beside every figure that is not a map, no plot titles except the sample on
-## a map. Sourced by the bin/ scripts that draw cell types, niches or per-subject changes ##
+## Figure style and helpers shared by the bin/ scripts that draw figures ##
 suppressPackageStartupMessages({
   library(data.table)
   library(ggplot2)
@@ -14,7 +10,7 @@ FIG_PT <- 11
 ## Low-confidence stripes on maps: spacing (um) and line width ##
 STRIPE_UM <- 3
 STRIPE_LWD <- 0.12
-## Niche types in the presentation's colours, type_1 first; later types take the rest ##
+## Niche type colours in order, type_1 first ##
 NICHE_COLOURS <- c(
   "#C3E7FF", "#F7DD9E", "#95C7C4", "#E0D2F2", "#A5FDDB", "#C4B3E1", "#D5C6B9", "#B5DDD8",
   "#D499ED", "#80FDCC", "#FFD1DC", "#D8E2A8", "#F5C6A5", "#B8C9F2", "#E8E3B0", "#C9E4CA"
@@ -28,8 +24,7 @@ EXTRA_COLOURS <- c(
   "#E68FAC", "#3B00FB", "#E41A1C", "#325A9B", "#B10DA1", "#1CBE4F", "#AA0DFE", "#F28E2B"
 )
 
-## The label colour file: label, colour, group (immune, non_immune or untyped) and display, the
-## name figures show. A label without a display name shows with spaces for underscores ##
+## Reads the label colour file with columns label, colour, group and display ##
 read_label_style <- function(file) {
   s <- if (nzchar(file) && file.exists(file)) {
     fread(file, colClasses = "character")
@@ -71,8 +66,7 @@ label_colours <- function(lv, style) {
   stats::setNames(col, lv)
 }
 
-## Drawing order: untyped labels underneath, immune labels on top. untyped and immune add to the
-## groups in the colour file ##
+## Drawing layer of each label, untyped underneath and immune on top ##
 label_layer <- function(x, style, untyped = character(), immune = character()) {
   x <- as.character(x)
   g <- style$group[match(x, style$label)]
@@ -99,8 +93,7 @@ theme_cosmx <- function(base = FIG_PT) {
     )
 }
 
-## Formats every figure is saved in, set from the scripts' --fig_format: png, pdf and jpeg,
-## comma separated, or all ##
+## Figure formats from --fig_format, any of png, pdf and jpeg, or all ##
 FIG_FORMATS <- "png"
 set_fig_format <- function(x) {
   f <- tolower(trimws(strsplit(x, ",")[[1]]))
@@ -114,8 +107,7 @@ set_fig_format <- function(x) {
   FIG_FORMATS <<- unique(f)
 }
 
-## A figure in every format of FIG_FORMATS, beside file (named .png). Sizes in inches. A map is
-## never a PDF, one path per cell makes it huge; asked only for PDFs, it comes as a PNG ##
+## Saves a figure in each of FIG_FORMATS, sizes in inches, a map never as a PDF ##
 save_fig <- function(p, file, w, h, map = FALSE) {
   formats <- FIG_FORMATS
   if (map) formats <- setdiff(formats, "pdf")
@@ -162,8 +154,7 @@ draw_key_low <- function(data, params, size) {
   grid::circleGrob(r = unit(dot_r(4, 0), "mm"), gp = grid::gpar(fill = stripes, col = NA))
 }
 
-## The legend's low-confidence entry, as an invisible point carrying draw_key_low. pos: one
-## row with x and y anywhere on the plot ##
+## The legend's low-confidence entry, an invisible point keyed by draw_key_low ##
 low_key_layers <- function(pos, n_low) {
   key <- data.table(x = pos$x[1], y = pos$y[1], conf = sprintf(
     "Low confidence (%s)",
@@ -179,8 +170,7 @@ low_key_layers <- function(pos, n_low) {
   )
 }
 
-## Cell outlines of a Giotto object: cell_ID, part (one ring) and x, y in pixels. Holes are left
-## out; a cell drawn in several parts keeps them all ##
+## Cell outlines as cell_ID, part, x and y in pixels, holes left out ##
 cell_outlines <- function(g, cell_ids = NULL) {
   sv <- Giotto::getPolygonInfo(g, polygon_name = "cell", return_giottoPolygon = TRUE)[]
   crd <- terra::geom(sv)
@@ -224,10 +214,8 @@ scale_bar_um <- function(width_um) {
   nice[max(1L, findInterval(width_um / 5, nice))]
 }
 
-## One tissue map, as the presentation draws them: every cell as its outline, filled by group;
-## groups in on_top drawn last, with an edge when top_line is set; low-confidence cells striped;
-## a scale bar; the legend on the right in one column. d: cell_ID, group (a factor), low and
-## optionally fov, whose cells are striped together. Returns the plot and its size (inches) ##
+## One tissue map of cell outlines filled by group, low-confidence cells striped ##
+## Takes d with cell_ID, group, low and optional fov, returns the plot, w and h in inches ##
 biopsy_map <- function(d, outlines, values, labels, um_per_px, legend_title, title = NULL,
                        on_top = character(), top_line = NA, top_lwd = 0, legend_w = 3.5) {
   d <- copy(d)
@@ -297,9 +285,8 @@ GeomSlash <- ggproto("GeomSlash", Geom,
   }
 )
 
-## Cells on the UMAP, coloured by group, low-confidence labels drawn first
-## with a white slash across each dot, then the rest by layer (untyped first, immune last); axes
-## as two arrows. d: UMAP1, UMAP2, group (a factor), low, layer ##
+## Cells on the UMAP by group, slashed low-confidence ones first, then by layer ##
+## Takes d with UMAP1, UMAP2, group as a factor, low and layer ##
 umap_plot <- function(d, values, labels, size = 0.4, seed = 1) {
   set.seed(seed)
   d <- d[order(!low, layer, sample(.N))]
@@ -361,10 +348,8 @@ fold_labels <- function(d) {
   f[]
 }
 
-## One line per subject across the levels (e.g. timepoints), one panel per measure.
-## Subjects seen at one level only are grey, with a dotted line at their value
-## through every level. A log axis when every value is above zero; fold labels at the last
-## level. d: panel, subject, level (a factor, baseline first), value ##
+## One line per subject over the levels, a panel per measure, lone subjects grey ##
+## Takes d with panel, subject, value and level as a factor, baseline first ##
 subject_lines <- function(d, ylab, log = TRUE, fold = TRUE, subject_names = NULL) {
   d <- copy(d)
   seen <- d[, .(n = uniqueN(level)), by = subject]
@@ -381,7 +366,7 @@ subject_lines <- function(d, ylab, log = TRUE, fold = TRUE, subject_names = NULL
       data = single, aes(yintercept = value, colour = subject),
       linetype = "dotted", linewidth = 0.8, show.legend = FALSE
     ) +
-    # Every subject, so the legend draws a line for each; one point draws no line
+    # Lines for every subject, giving each a line in the legend
     geom_line(linewidth = 0.9) +
     geom_point(size = 2.6) +
     scale_colour_manual(

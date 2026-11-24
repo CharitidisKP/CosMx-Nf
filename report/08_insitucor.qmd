@@ -1,0 +1,65 @@
+---
+title: "08 - InSituCor"
+subtitle: "Gene modules that vary together in space"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+md_f <- find_tab("^insitucor_modules\\.csv$")
+iv_f <- find_tab("^insitucor_celltype_involvement\\.csv$")
+md <- read_files(md_f)
+iv <- read_files(iv_f, colClasses = list(character = 1))
+if (!is.null(iv)) setnames(iv, 1, "module")
+```
+
+InSituCor finds genes whose expression around each cell rises and falls together across the tissue, groups them into modules, and asks which cell types carry each module.
+
+```{r}
+page_top(
+  stages = "cci",
+  Input = "The spatial object's counts, positions and <code>celltype_column</code>.",
+  Method = "InSituCor on each cell's <code>insitucor_k</code> nearest neighbours, conditioned on the cell type, the sample, the total counts and the background.",
+  Output = "The tables in <code>tables/08_cci/insitucor</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Modules" = function() {
+    if (is.null(md) || !all(c("module", "gene", "weight") %in% names(md))) return(missing_note("InSituCor has not run."))
+    n_mod <- length(unique(md$module))
+    fig <- rfig("insitucor_modules", md_f, function() {
+      d <- md[order(-weight)][, head(.SD, 10), by = module]
+      d[, gene := reorder(paste(gene, module, sep = "___"), weight)]
+      ggplot(d, aes(weight, gene)) +
+        geom_col(fill = TEAL, width = 0.7) +
+        scale_y_discrete(labels = function(x) sub("___.*$", "", x)) +
+        facet_wrap(~module, scales = "free", ncol = 3) +
+        labs(x = "Weight in the module", y = NULL) +
+        theme_report()
+    }, 10, 1.6 + 2.4 * ceiling(n_mod / 3))
+    tagList(
+      rgallery(list(`The ten heaviest genes of each module` = fig), big = TRUE),
+      hits_table(md, csv = md_f, note = "The genes of each module and their weights.")
+    )
+  },
+  "Cell types behind each module" = function() {
+    if (is.null(iv)) return(missing_note("No involvement table yet."))
+    fig <- rfig("insitucor_involvement", c(iv_f, RUN$label_colours), function() {
+      long <- melt(iv, id.vars = "module", variable.name = "cell_type", value.name = "involvement")
+      long[, `:=`(cell_type = factor(as.character(cell_type), label_levels(as.character(cell_type), STYLE)), module = factor(module, rev(unique(module))))]
+      heat_plot(long, "cell_type", "module", "involvement", name = "Involvement") +
+        scale_x_discrete(labels = function(x) display_name(x, STYLE))
+    }, heat_size(ncol(iv) - 1, nrow(iv))[["w"]], heat_size(ncol(iv) - 1, nrow(iv))[["h"]] + 0.8)
+    tagList(
+      rgallery(list(`How much each cell type carries each module` = fig), big = TRUE),
+      hits_table(iv, csv = iv_f),
+      csv_links(find_tab("^insitucor_scores_env\\.csv$"))
+    )
+  },
+  ".pipeline" = function() pipeline_figures(figs("08_cci/insitucor", "\\.png$", FALSE)),
+  "Parameters" = function() params_table(c("insitucor_k", "celltype_column"), "cci")
+)))
+```

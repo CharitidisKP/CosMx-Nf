@@ -1,0 +1,72 @@
+# Run report: one page per step, built from the files the run wrote in results/
+# The REPORT step builds it at the end of every stage, and cosmx-nf <run_id> report rebuilds it
+# The pages link the figures and tables in results/, so the site stays in results/report/
+project:
+  type: website
+  output-dir: _site
+
+execute:
+  echo: false
+  warning: false
+  message: false
+  # A page whose code fails shows the error, and the rest of the site still builds
+  error: true
+  freeze: false
+
+website:
+  title: "CosMx-Nf run report"
+  search: true
+  page-navigation: true
+  sidebar:
+    style: docked
+    contents:
+      - text: Overview
+        href: index.qmd
+      - section: Pipeline
+        contents:
+          - 01_qc.qmd
+          - 02_integration.qmd
+          - 03_clustering.qmd
+          - section: "04 - Reference typing"
+            contents:
+              - 04_hieratype.qmd
+              - 04_insitutype.qmd
+              - 04_supervised.qmd
+          - 05_subclustering.qmd
+          - 06_annotation.qmd
+          - section: "07 - Spatial"
+            contents:
+              - 07_neighbours.qmd
+              - 07_density.qmd
+              - 07_niches.qmd
+              - 07_bcell.qmd
+              - 07_sweep.qmd
+          - section: "08 - Cell-cell communication"
+            contents:
+              - 08_liana.qmd
+              - 08_nichenet.qmd
+              - 08_misty.qmd
+              - 08_svg.qmd
+              - 08_insitucor.qmd
+          - section: "09 - Differential expression"
+            contents:
+              - 09_pseudobulk.qmd
+              - 09_smide.qmd
+      - text: Run status
+        href: status.qmd
+
+format:
+  html:
+    # The first theme listed is the default, dark with a toggle for light
+    theme:
+      dark: darkly
+      light: flatly
+    css: styles.css
+    toc: true
+    toc-depth: 3
+    # The contents list sits on the left under the menu, clear of wide tables
+    toc-location: left
+    page-layout: full
+    include-after-body: _tables.html
+    # Quarto leaves the pages' HTML tables as built, and the content after them with them
+    html-table-processing: none

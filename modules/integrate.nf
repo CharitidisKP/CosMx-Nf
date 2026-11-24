@@ -18,9 +18,13 @@ process INTEGRATE {
         path "*.txt"
 
     script:
+    def hvg = params.hvg_file ? file(params.hvg_file).toString() : ''
     """
+    export OMP_NUM_THREADS=${task.cpus} OPENBLAS_NUM_THREADS=${task.cpus} MKL_NUM_THREADS=${task.cpus} BLIS_NUM_THREADS=${task.cpus}
+
     integrate.R --input '${obj}' --markers '${params.markers}' --scalefactor '${params.scalefactor}' \\
-        --n_hvgs ${params.n_hvgs} --n_pcs ${params.n_pcs} --batch_column '${params.batch_column}' \\
+        --n_hvgs ${params.n_hvgs} --hvg_method '${params.hvg_method}' --hvg_file '${hvg}' \\
+        --n_pcs ${params.n_pcs} --batch_column '${params.batch_column}' \\
         --batch_correct '${params.batch_correct}' \\
         --dims_use '${params.dims_use}' --seed ${params.seed} --outdir . --python '${params.python_path}'
     """

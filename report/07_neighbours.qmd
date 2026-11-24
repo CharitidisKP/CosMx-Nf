@@ -1,0 +1,77 @@
+---
+title: "07 - Neighbours"
+subtitle: "Which cell types sit next to each other"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+pe_f <- find_tab("^proximity_enrichment\\.csv$")
+pc_f <- find_tab("^positions_check\\.csv$")
+```
+
+The spatial stage joins each sample's cells into a Delaunay network and tests every pair of cell types for sitting together more or less often than chance, against permuted labels.
+
+```{r}
+page_top(
+  stages = "spatial",
+  Input = "The annotate object and its <code>celltype_column</code>.",
+  Method = "A Delaunay network per sample with edges up to <code>max_delaunay_dist</code>, then neighbour enrichment against <code>prox_sim</code> permutations of the labels.",
+  Output = "The network on the spatial object, and the tables in <code>tables/07_spatial/network</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Neighbour network" = function() {
+    sn <- read_tab("^spatial_net_summary\\.csv$")
+    pchk <- read_files(pc_f)
+    fig <- if (!is.null(pchk) && all(c("sample", "cells", "moved_over_20px") %in% names(pchk))) {
+      rfig("positions_check", pc_f, function() {
+        d <- copy(pchk)[, sample := factor(sample, rev(sample_levels(sample)))]
+        ggplot(d, aes(moved_over_20px, sample)) +
+          geom_col(fill = TEAL, width = 0.7) +
+          scale_x_continuous(labels = scales::label_comma(), expand = expansion(c(0, 0.04))) +
+          labs(x = "Cells moved by more than 20 pixels to match their outline", y = NULL) +
+          theme_report()
+      }, 7, 1.2 + 0.3 * nrow(pchk))
+    }
+    tagList(
+      if (!is.null(sn) && all(c("n_edges", "cross_sample_edges") %in% names(sn))) {
+        tags$p(sprintf("%s edges, %s of them across samples.", fmt_n(sn$n_edges[1]), fmt_n(sn$cross_sample_edges[1])))
+      },
+      rgallery(list(`Cell positions corrected from their outlines, per sample` = fig), wide = TRUE),
+      tab("^positions_check\\.csv$", note = "Per sample, the cells whose position moved by more than 20 pixels when matched to their outline, the largest move and the cells with no outline.")
+    )
+  },
+  "Neighbour enrichment" = function() {
+    pe <- read_files(pe_f)
+    if (is.null(pe) || !all(c("sample", "unified_int", "enrichm") %in% names(pe))) return(missing_note("No enrichment yet."))
+    n_ct <- length(unique(unlist(tstrsplit(pe$unified_int, "--", fixed = TRUE))))
+    fig <- rfig("proximity_heatmap", c(pe_f, RUN$label_colours), function() {
+      d <- copy(pe)
+      ab <- tstrsplit(d$unified_int, "--", fixed = TRUE)
+      d[, `:=`(a = ab[[1]], b = ab[[2]])]
+      m <- d[, .(enrich = mean(enrichm, na.rm = TRUE), hits = sum(p.adj_higher < 0.05, na.rm = TRUE), n = .N), by = .(a, b)]
+      m <- rbind(m, m[a != b, .(a = b, b = a, enrich, hits, n)])
+      m[, most := hits >= ceiling(n / 2)]
+      lv <- label_levels(c(m$a, m$b), STYLE)
+      m[, `:=`(a = factor(a, lv), b = factor(b, rev(lv)))]
+      heat_plot(m, "a", "b", "enrich", diverging = TRUE, name = "Mean log2\nenrichment", dot = "most") +
+        scale_x_discrete(labels = function(x) display_name(x, STYLE)) +
+        scale_y_discrete(labels = function(x) display_name(x, STYLE))
+    }, heat_size(n_ct, n_ct)[["w"]] + 1, heat_size(n_ct, n_ct)[["h"]] + 1)
+    tagList(
+      rgallery(list(`Mean log2 enrichment of each pair as neighbours over the samples. A dot: enriched at FDR below 0.05 in at least half the samples` = fig), big = TRUE),
+      tab("^proximity_enrichment\\.csv$", order = "p.adj_higher", note = "Each pair of cell types per sample against permuted labels. enrichm is the log2 enrichment.")
+    )
+  },
+  "Cell-type maps" = function() {
+    f <- figs("07_spatial/network", "^spatial_celltype_.+\\.png$", FALSE)
+    figure_picker(f, nice(f, "spatial_celltype_"), empty = "No maps yet.")
+  },
+  ".pipeline" = function() pipeline_figures(figs("07_spatial/network", "\\.png$", FALSE)),
+  "Parameters" = function() params_table(c("max_delaunay_dist", "prox_sim", "celltype_column"), "spatial")
+)))
+```

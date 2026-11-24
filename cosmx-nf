@@ -1,0 +1,678 @@
+#!/usr/bin/env bash
+# Single entry point for runs and setup. `cosmx-nf -h` lists the commands
+set -euo pipefail
+
+PIPE_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+STAGES="discover subcluster checks diagnose supervised annotate spatial cci de banksy_sweep report"
+SITE_FILE="$PIPE_DIR/conf/site.yaml"
+# The published image, tagged with the pipeline version in nextflow.config
+IMAGE_REPO="oras://ghcr.io/charitidiskp/cosmx-nf"
+ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+UUID_RE='^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'
+
+usage() {
+  cat <<'EOF'
+usage: cosmx-nf <run_id>                       where the run stands, and the next command
+       cosmx-nf <run_id> <stage> [options]     run one stage
+       cosmx-nf <run_id> labels [clustering]   draft labels into the run's labels folder,
+                                               by default for the stability check's pick
+       cosmx-nf <run_id> bundle [genes] [poly_compress] [object]
+                                               export the run for the Shiny app
+       cosmx-nf setup [--sif <file>] [--images <folder>] [--no-references]
+                                               get the image and the reference files,
+                                               and write conf/site.yaml
+       cosmx-nf init <folder>                  make a project folder
+       cosmx-nf install [folder]               put cosmx-nf on PATH (default ~/.local/bin)
+
+stages: discover subcluster checks diagnose supervised annotate spatial cci de banksy_sweep report
+        cci and de run annotate and spatial first when the labels changed since they ran.
+
+options:
+  --fresh            start the stage over, instead of resuming its last launch
+  -profile <name>    default: profile: in the settings, else server
+  --<param> <value>  a pipeline parameter; one that no config declares is refused
+Other Nextflow run options pass through.
+
+Settings: conf/site.yaml holds this machine's (image, Python, bind mounts). In a project,
+its cosmx-nf.yaml is read on top, so its keys win.
+EOF
+}
+
+die() {
+  echo "cosmx-nf: $*" >&2
+  exit 1
+}
+
+# Warns when the launch is outside tmux or screen, prefixed by $1
+detach_note() {
+  if [ -z "${TMUX:-}" ] && [ -z "${STY:-}" ] && [ -t 1 ]; then
+    printf '%snot inside tmux or screen: closing this terminal stops the run\n' "$1"
+  fi
+}
+
+# The nearest folder at or above this one holding cosmx-nf.yaml, empty outside a project
+find_project() {
+  local d=$PWD
+  while :; do
+    if [ -f "$d/cosmx-nf.yaml" ]; then
+      echo "$d"
+      return 0
+    fi
+    if [ "$d" = / ]; then return 0; fi
+    d=$(dirname "$d")
+  done
+}
+
+# Merges conf/site.yaml and a project's cosmx-nf.yaml by top-level key, the project winning
+merge_settings() {
+  awk 'FNR == 1 { f++ }
+    /^[A-Za-z_][A-Za-z0-9_]*:/ {
+      k = $0
+      sub(/:.*/, "", k)
+      if (f == 1) { if (!(k in site)) order[++n] = k; site[k] = $0 }
+      else { if (!(k in proj)) porder[++m] = k; proj[k] = $0 }
+    }
+    END {
+      for (i = 1; i <= n; i++) if (!(order[i] in proj)) print site[order[i]]
+      for (i = 1; i <= m; i++) print proj[porder[i]]
+    }' "$1" "$2"
+}
+
+# Finds nextflow in NXF_BIN, PATH, ~/bin, ~/.local/bin or the pipeline folder
+find_nextflow() {
+  local c
+  if [ -n "${NXF_BIN:-}" ]; then
+    echo "$NXF_BIN"
+    return 0
+  fi
+  if command -v nextflow 2>/dev/null; then return 0; fi
+  for c in "$HOME/bin/nextflow" "$HOME/.local/bin/nextflow" "$PIPE_DIR/nextflow"; do
+    if [ -x "$c" ]; then
+      echo "$c"
+      return 0
+    fi
+  done
+}
+
+# Puts cosmx-nf on PATH: a link to this script in ~/.local/bin, or the folder given
+install_cmd() {
+  [ $# -le 1 ] || die "usage: cosmx-nf install [folder], default ~/.local/bin"
+  local dir=${1:-$HOME/.local/bin} link
+  mkdir -p "$dir"
+  dir=$(cd "$dir" && pwd)
+  link="$dir/cosmx-nf"
+  if [ -e "$link" ] && [ ! -L "$link" ]; then die "$link exists and is not a link; move it first"; fi
+  ln -sfn "$PIPE_DIR/cosmx-nf" "$link"
+  echo "linked  : $link -> $PIPE_DIR/cosmx-nf"
+  case ":$PATH:" in
+    *":$dir:"*) echo "cosmx-nf now runs from any folder" ;;
+    *)
+      echo "$dir is not on PATH. Add this line to ~/.bashrc, and to ~/.bash_profile for login shells:"
+      echo "  export PATH=\"$dir:\$PATH\"" ;;
+  esac
+}
+
+# Sets up this machine: the image, the reference files and conf/site.yaml
+setup_cmd() {
+  local sif="" image="" images="$PIPE_DIR/images" refs=1 ver nxf
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --sif | --image | --images) [ $# -ge 2 ] || die "$1 needs a value" ;;
+    esac
+    case "$1" in
+      --sif) sif=$2; shift 2 ;;
+      --image) image=$2; shift 2 ;;
+      --images) images=$2; shift 2 ;;
+      --no-references) refs=0; shift ;;
+      -h | --help) usage; exit 0 ;;
+      *) die "setup takes --sif <file>, --image <address>, --images <folder> and --no-references, not $1" ;;
+    esac
+  done
+  command -v apptainer >/dev/null 2>&1 ||
+    die "apptainer is not installed here. Ask your admins for it, or load it (often 'module load apptainer'), then rerun setup"
+  ver=$(awk -F"'" '/^[[:space:]]*version[[:space:]]*=/ { print $2; exit }' "$PIPE_DIR/nextflow.config")
+  [ -n "$ver" ] || die "no version in $PIPE_DIR/nextflow.config"
+
+  if [ -z "$sif" ]; then
+    image=${image:-$IMAGE_REPO:$ver}
+    sif="$images/cosmx-nf_$ver.sif"
+    if [ -f "$sif" ]; then
+      echo "image   : $sif (already here)"
+    else
+      mkdir -p "$images"
+      echo "image   : pulling $image (a few GB) into $sif"
+      apptainer pull "$sif" "$image"
+    fi
+  fi
+  [ -f "$sif" ] || die "no image at $sif"
+  sif="$(cd "$(dirname "$sif")" && pwd)/$(basename "$sif")"
+
+  if [ "$refs" = 1 ]; then
+    echo "references: NicheNet, HCA and KPMP into $PIPE_DIR/assets (the KPMP build downloads 1.8 GB)"
+    "$PIPE_DIR/Environment/references.sh" "$sif"
+  fi
+
+  if [ -f "$SITE_FILE" ]; then
+    echo "settings: conf/site.yaml is left as it is. For this image it needs"
+    printf '  sif: %s\n  container_python: /opt/py/bin/python\n  python_path: /opt/py/bin/python\n' "$sif"
+    printf '  r_libs: /none\n  r_libs_user: /none\n'
+  else
+    cat >"$SITE_FILE" <<EOF
+# This machine's settings, written by cosmx-nf setup. conf/site.example.yaml explains each key
+profile: server
+sif: $sif
+container_python: /opt/py/bin/python
+python_path: /opt/py/bin/python
+# No host R library reaches the image
+r_libs: /none
+r_libs_user: /none
+# Host folders outside your home that tasks read or write, comma-separated
+# bind: /data,/scratch
+EOF
+    echo "settings: wrote conf/site.yaml"
+  fi
+  nxf=$(find_nextflow)
+  if [ -z "$nxf" ]; then
+    echo "nextflow: not found. It needs Java 17 or later; install it with"
+    echo "  curl -s https://get.nextflow.io | bash && mv nextflow ~/.local/bin/"
+  fi
+  echo "next    : cosmx-nf init <project folder>"
+}
+
+# Makes a project folder: cosmx-nf.yaml, a header-only samplesheet.csv and Runs/
+init_cmd() {
+  [ $# -eq 1 ] || die "usage: cosmx-nf init <folder>"
+  local dir=$1
+  [ ! -e "$dir/cosmx-nf.yaml" ] || die "$dir is a project already"
+  mkdir -p "$dir/Runs"
+  dir=$(cd "$dir" && pwd)
+  if [ ! -e "$dir/samplesheet.csv" ]; then
+    head -n 1 "$PIPE_DIR/assets/samplesheet.csv" >"$dir/samplesheet.csv"
+  fi
+  cat >"$dir/cosmx-nf.yaml" <<'EOF'
+# This project's settings, laid over conf/site.yaml. Any parameter can go here
+input: samplesheet.csv
+EOF
+  echo "project : $dir"
+  echo "  cosmx-nf.yaml    the project's settings"
+  echo "  samplesheet.csv  one row per sample (columns in the README's Samplesheet section)"
+  echo "  Runs/            one folder per run"
+  if [ ! -f "$SITE_FILE" ]; then echo "note    : this machine has no conf/site.yaml yet: cosmx-nf setup"; fi
+  echo "next    : fill in samplesheet.csv, then: cd $dir && cosmx-nf run1 discover"
+}
+
+# This run's last launch of stage $1: session, name, start, duration and status
+last_launch() {
+  [ -f "$HIST" ] || return 0
+  awk -F'\t' -v r="$RUN_ID" -v s="$1" '
+    $NF ~ ("--run_id " r "( |$)") {
+      st = "discover"
+      if (match($NF, /--stage [^ ]+/)) st = substr($NF, RSTART + 8, RLENGTH - 8)
+      if (st == s) { id = $6; nm = $3; t = $1; d = $2; ok = $4 }
+    }
+    END { if (id != "") print id "\t" nm "\t" t "\t" d "\t" ok }' "$HIST"
+}
+
+# The session of this run's latest launch, whatever its stage
+latest_launch() {
+  [ -f "$HIST" ] || return 0
+  awk -F'\t' -v r="$RUN_ID" '$NF ~ ("--run_id " r "( |$)") { id = $6 } END { print id }' "$HIST"
+}
+
+# True when the stage's object or tables are in results
+made() {
+  case "$1" in
+    discover | subcluster | annotate | spatial) [ -f "$RUN_DIR/results/objects/$1/giotto/gobject.RDS" ] ;;
+    cci) [ -d "$RUN_DIR/results/tables/08_cci" ] ;;
+    de) [ -d "$RUN_DIR/results/tables/09_de" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# True when everything the stage wrote is older than the object it reads
+outdated() {
+  local out in obj
+  case "$1" in
+    annotate)
+      out=objects/annotate/giotto
+      if [[ "$(label_basis)" == sub_* ]]; then in=subcluster; else in=discover; fi ;;
+    spatial) out=objects/spatial/giotto; in=annotate ;;
+    cci) out=tables/08_cci; in=spatial ;;
+    de) out=tables/09_de; in=spatial ;;
+    *) return 1 ;;
+  esac
+  obj="$RUN_DIR/results/objects/$in/giotto/gobject.RDS"
+  [ -f "$obj" ] && [ -n "$(find "$RUN_DIR/results/$out" -type f -print -quit 2>/dev/null || true)" ] || return 1
+  [ -z "$(find "$RUN_DIR/results/$out" -type f -newer "$obj" -print -quit 2>/dev/null || true)" ]
+}
+
+# The stage still has to run: it never finished, or finished before its input was rebuilt
+pending() {
+  [ "$(stage_state "$1")" != done ] || outdated "$1"
+}
+
+# A stage's state: done, failed, running, stopped or none
+stage_state() {
+  local hit sid ok
+  hit=$(last_launch "$1")
+  if [ -z "$hit" ]; then
+    if made "$1"; then echo done; else echo none; fi
+    return 0
+  fi
+  IFS=$'\t' read -r sid _ _ _ ok <<<"$hit"
+  case "$ok" in
+    OK) echo done ;;
+    ERR) echo failed ;;
+    *)
+      if [ "$sid" = "$(latest_launch)" ] &&
+        pgrep -u "$(id -u)" -f -- "--run_id $RUN_ID( |\$)" >/dev/null 2>&1; then
+        echo running
+      else
+        echo stopped
+      fi ;;
+  esac
+}
+
+# The labels' clustering: cluster_basis.txt, or the one cluster_labels.<clustering>.csv
+label_basis() {
+  local dir="$RUN_DIR/labels" f found=()
+  if [ -f "$dir/cluster_basis.txt" ]; then
+    head -n 1 "$dir/cluster_basis.txt" | tr -d '[:space:]'
+    return 0
+  fi
+  for f in "$dir"/cluster_labels.*.csv; do
+    if [ -f "$f" ]; then found+=("$f"); fi
+  done
+  if [ ${#found[@]} -eq 1 ]; then
+    f=${found[0]##*/}
+    f=${f#cluster_labels.}
+    echo "${f%.csv}"
+  fi
+}
+
+# The clustering the stability check picked, empty until it has run
+picked_basis() {
+  local f="$RUN_DIR/results/tables/03_clustering/checks/picked_resolution.txt"
+  if [ -f "$f" ]; then head -n 1 "$f" | tr -d '[:space:]'; fi
+}
+
+# main.nf's label_state() digest: md5 of the clustering, its labels and the per-cell edits
+label_digest() {
+  if command -v md5sum >/dev/null 2>&1; then
+    { printf '%s\n' "$1"; cat "$2"; printf '\n'; cat "$3"; } | md5sum | cut -d' ' -f1
+  else
+    { printf '%s\n' "$1"; cat "$2"; printf '\n'; cat "$3"; } | md5 -q
+  fi
+}
+
+# Where the run stands: each stage's last launch, the labels and the next command
+status() {
+  local s state hit t d dir="$RUN_DIR/labels" basis n=0 f ovr digest="" built="" next old=0 pick
+  echo "run     : $RUN_ID"
+  if [ ! -d "$RUN_DIR" ]; then
+    echo "folder  : none yet"
+    echo
+    echo "next    : cosmx-nf $RUN_ID discover"
+    return 0
+  fi
+  echo "folder  : $(cd "$RUN_DIR" && pwd)"
+  if [ -f "$RUN_DIR/results/report/index.html" ]; then
+    echo "report  : $(cd "$RUN_DIR/results/report" && pwd)/index.html"
+  fi
+  echo
+  printf '%-13s%-18s%-9s%s\n' stage "last launch" result took
+  for s in $STAGES; do
+    hit=$(last_launch "$s")
+    state=$(stage_state "$s")
+    if [ "$state" = done ] && outdated "$s"; then
+      state=outdated
+      old=1
+    fi
+    if [ -n "$hit" ]; then
+      IFS=$'\t' read -r _ _ t d _ <<<"$hit"
+      printf '%-13s%-18s%-9s%s\n' "$s" "${t:0:16}" "$state" "$d"
+    elif [ "$state" = done ] || [ "$state" = outdated ]; then
+      printf '%-13s%-18s%-9s%s\n' "$s" - "$state" "(launched from another folder)"
+    else
+      case " discover annotate spatial cci de " in
+        *" $s "*) printf '%-13s%-18s%s\n' "$s" - "not run" ;;
+      esac
+    fi
+  done
+  if [ "$old" = 1 ]; then
+    echo "outdated: finished before the object it reads was rebuilt"
+  fi
+
+  echo
+  basis=$(label_basis)
+  for f in "$dir"/cluster_labels.*.csv; do
+    if [ -f "$f" ]; then n=$((n + 1)); fi
+  done
+  if [ "$n" -eq 0 ]; then
+    echo "labels  : none in labels/ yet"
+  elif [ -z "$basis" ]; then
+    echo "labels  : $n clusterings; write the one cell_type comes from into labels/cluster_basis.txt"
+  elif [ ! -f "$dir/cluster_labels.$basis.csv" ]; then
+    echo "labels  : cluster_basis.txt names $basis, but labels/ has no cluster_labels.$basis.csv"
+  else
+    ovr="$dir/label_overrides.csv"
+    if [ -f "$ovr" ]; then f="with per-cell edits"; else ovr="$PIPE_DIR/assets/no_label_overrides.csv"; f="no per-cell edits"; fi
+    digest=$(label_digest "$basis" "$dir/cluster_labels.$basis.csv" "$ovr")
+    if [ -f "$RUN_DIR/results/objects/annotate/label_state.txt" ]; then
+      built=$(tr -d '[:space:]' <"$RUN_DIR/results/objects/annotate/label_state.txt")
+    fi
+    echo "labels  : cell_type from $basis, $f"
+    if [ -z "$built" ] && made annotate; then
+      echo "          the annotate object records no labels: cci and de rerun annotate and spatial first"
+    elif [ -z "$built" ]; then
+      echo "          annotate has not run yet"
+    elif [ "$built" = "$digest" ]; then
+      echo "          annotate is up to date with them"
+    else
+      echo "          edited since annotate ran: cci and de rerun annotate and spatial first"
+    fi
+  fi
+
+  next="nothing pending. After editing labels, cosmx-nf $RUN_ID cci and de rebuild what they need"
+  for s in $STAGES; do
+    if [ "$(stage_state "$s")" = running ]; then next="wait: $s is running"; fi
+  done
+  if [[ "$next" == wait:* ]]; then
+    :
+  elif [ "$(stage_state discover)" != done ]; then
+    next="cosmx-nf $RUN_ID discover"
+  elif [ "$n" -eq 0 ]; then
+    pick=$(picked_basis)
+    if [ -n "$pick" ]; then
+      next="cosmx-nf $RUN_ID labels (drafts $pick, the stability check's pick), then curate labels/"
+    else
+      next="cosmx-nf $RUN_ID labels <clustering>, e.g. leiden_clus_res0.3, then curate labels/"
+    fi
+  elif [ -z "$digest" ]; then
+    next="settle labels/ as above"
+  elif [[ "$basis" == sub_* ]] && [ "$(stage_state subcluster)" != done ]; then
+    next="cosmx-nf $RUN_ID subcluster --subcluster_basis <clustering>"
+  elif [ "$built" != "$digest" ]; then
+    next="cosmx-nf $RUN_ID cci (annotate and spatial run first), then cosmx-nf $RUN_ID de"
+  elif pending spatial; then
+    next="cosmx-nf $RUN_ID spatial, then cci and de"
+  elif pending cci && pending de; then
+    next="cosmx-nf $RUN_ID cci, then cosmx-nf $RUN_ID de"
+  elif pending cci; then
+    next="cosmx-nf $RUN_ID cci"
+  elif pending de; then
+    next="cosmx-nf $RUN_ID de"
+  fi
+  echo
+  echo "next    : $next"
+}
+
+# Drafts labels with the annotation notebook into the run's labels folder, never overwriting
+labels() {
+  [ $# -le 1 ] || die "labels takes one clustering name, e.g. leiden_clus_res0.3"
+  local basis=${1:-} obj draft dest n=0 f
+  if [ -z "$basis" ]; then
+    basis=$(picked_basis)
+    if [ -n "$basis" ]; then
+      echo "clustering: $basis, the stability check's pick"
+    else
+      basis=leiden_clus_res0.3
+    fi
+  fi
+  case "$basis" in
+    sub_*) obj=subcluster ;;
+    *) obj=discover ;;
+  esac
+  [ -f "$RUN_DIR/results/objects/$obj/giotto/gobject.RDS" ] ||
+    die "$RUN_ID has no $obj object yet: cosmx-nf $RUN_ID $obj"
+  detach_note "note: "
+  "$PIPE_DIR/notebooks/render.sh" "$RUN_ID" "$basis"
+  draft="$RUN_DIR/results/tables/06_annotation/labels/cluster_labels.$basis.csv"
+  [ -f "$draft" ] || die "the notebook wrote no draft at $draft"
+  dest="$RUN_DIR/labels/cluster_labels.$basis.csv"
+  mkdir -p "$RUN_DIR/labels"
+  if [ -e "$dest" ]; then
+    echo "kept the curated $dest; the new draft is $draft"
+  else
+    cp "$draft" "$dest"
+    echo "draft copied to $dest"
+  fi
+  for f in "$RUN_DIR/labels"/cluster_labels.*.csv; do
+    if [ -f "$f" ]; then n=$((n + 1)); fi
+  done
+  if [ "$n" -gt 1 ] && [ ! -f "$RUN_DIR/labels/cluster_basis.txt" ]; then
+    echo "labels/ holds $n clusterings: write the one cell_type comes from into labels/cluster_basis.txt"
+  fi
+  echo "next: curate the labels, by hand or in the app, then cosmx-nf $RUN_ID cci"
+}
+
+case "${1:-}" in
+  "") usage >&2; exit 1 ;;
+  -h | --help) usage; exit 0 ;;
+  install) shift; install_cmd "$@"; exit 0 ;;
+  setup) shift; setup_cmd "$@"; exit 0 ;;
+  init) shift; init_cmd "$@"; exit 0 ;;
+esac
+RUN_ID=$1
+shift
+[[ "$RUN_ID" =~ $ID_RE ]] || die "a run_id is letters, digits, '.', '_' and '-', not '$RUN_ID'"
+
+# Runs and the launch folder: the project, or the pipeline folder with runs beside it
+PROJECT=$(find_project)
+if [ -n "$PROJECT" ]; then
+  RUNS="$PROJECT/Runs"
+  LAUNCH=$PROJECT
+  # The helpers read the project's settings before conf/site.yaml
+  export COSMX_NF_PROJECT_YAML="$PROJECT/cosmx-nf.yaml"
+else
+  RUNS="$PIPE_DIR/../Runs"
+  LAUNCH=$PIPE_DIR
+  unset COSMX_NF_PROJECT_YAML
+fi
+export COSMX_NF_RUNS=$RUNS
+HIST="$LAUNCH/.nextflow/history"
+RUN_DIR="$RUNS/$RUN_ID"
+
+# The word after the run_id, or --stage <name>, is the stage or command
+CMD=""
+if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+  CMD=$1
+  shift
+fi
+ARGS=()
+FRESH=0
+PROFILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h | --help) usage; exit 0 ;;
+    --stage)
+      [ $# -ge 2 ] || die "--stage needs a stage name"
+      [ -z "$CMD" ] || [ "$CMD" = "$2" ] || die "two stages given: $CMD and $2"
+      CMD=$2
+      shift 2 ;;
+    --fresh)
+      FRESH=1
+      shift ;;
+    -profile)
+      [ $# -ge 2 ] || die "-profile needs a name"
+      PROFILE=$2
+      shift 2 ;;
+    *)
+      ARGS+=("$1")
+      shift ;;
+  esac
+done
+
+case "$CMD" in
+  "" | status)
+    if [ ${#ARGS[@]} -gt 0 ] || [ "$FRESH" = 1 ] || [ -n "$PROFILE" ]; then
+      die "name a stage to pass options to, e.g. cosmx-nf $RUN_ID discover"
+    fi
+    status
+    exit 0 ;;
+  labels)
+    if [ "$FRESH" = 1 ] || [ -n "$PROFILE" ]; then die "labels takes only a clustering name"; fi
+    labels ${ARGS[@]+"${ARGS[@]}"}
+    exit 0 ;;
+  bundle)
+    if [ "$FRESH" = 1 ] || [ -n "$PROFILE" ]; then die "bundle takes [genes] [poly_compress] [object]"; fi
+    exec "$PIPE_DIR/shiny/export_app_bundle.sh" "$RUN_ID" ${ARGS[@]+"${ARGS[@]}"} ;;
+esac
+case " $STAGES " in
+  *" $CMD "*) ;;
+  *) die "no stage or command '$CMD'. Stages: $STAGES" ;;
+esac
+
+# Refuses any --param that no config declares
+DECLARED=$(grep -rhoE '^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=' \
+  "$PIPE_DIR/nextflow.config" "$PIPE_DIR"/conf/*.config | tr -d ' \t=' | sort -u)
+for a in ${ARGS[@]+"${ARGS[@]}"}; do
+  case "$a" in
+    --*) grep -qx -- "${a#--}" <<<"$DECLARED" || die "unknown parameter: $a" ;;
+  esac
+done
+
+# Without --cluster_basis, annotate's clustering comes from the run's labels folder
+BASIS=""
+IN=""
+for ((i = 0; i < ${#ARGS[@]}; i++)); do
+  case "${ARGS[i]}" in
+    --cluster_basis) BASIS="${ARGS[i + 1]:-}" ;;
+    --merged_giotto) IN="${ARGS[i + 1]:-}" ;;
+  esac
+done
+if [ "$CMD" = annotate ] && [ -z "$BASIS" ]; then BASIS=$(label_basis); fi
+# The object each stage reads (IN) and the results folder it writes (OUT)
+OUT=""
+case "$CMD" in
+  annotate)
+    OUT=objects/annotate/giotto
+    if [[ "$BASIS" == sub_* ]]; then DEF=subcluster; else DEF=discover; fi ;;
+  spatial) OUT=objects/spatial/giotto; DEF=annotate ;;
+  cci) OUT=tables/08_cci; DEF=spatial ;;
+  de) OUT=tables/09_de; DEF=spatial ;;
+  banksy_sweep) OUT=tables/07_spatial/banksy_sweep; DEF=spatial ;;
+esac
+if [ -n "$OUT" ]; then
+  if [ -z "$IN" ]; then
+    IN="$RUN_DIR/results/objects/$DEF/giotto"
+  elif [[ "$IN" != /* ]]; then
+    IN="$PIPE_DIR/$IN"
+  fi
+fi
+# True when nothing the stage wrote is newer than its input object
+input_newer() {
+  [ -n "$OUT" ] && [ -f "$IN/gobject.RDS" ] || return 1
+  [ -z "$(find "$RUN_DIR/results/$OUT" -type f -newer "$IN/gobject.RDS" -print -quit 2>/dev/null || true)" ]
+}
+
+# Resumes this run's last launch of the stage, or the session given with -resume
+WANT=0
+EXPLICIT=""
+REST=()
+for ((i = 0; i < ${#ARGS[@]}; i++)); do
+  if [ "${ARGS[i]}" = -resume ]; then
+    WANT=1
+    if [[ "${ARGS[i + 1]:-}" =~ $UUID_RE ]]; then
+      EXPLICIT=${ARGS[i + 1]}
+      i=$((i + 1))
+    fi
+  else
+    REST+=("${ARGS[i]}")
+  fi
+done
+ARGS=(${REST[@]+"${REST[@]}"})
+[ "$FRESH" = 0 ] || [ "$WANT" = 0 ] || die "--fresh and -resume contradict each other"
+RESUME=()
+if [ "$FRESH" = 1 ]; then
+  RESUME_NOTE="off (--fresh)"
+elif [ -n "$EXPLICIT" ]; then
+  HIT=$(awk -F'\t' -v id="$EXPLICIT" '$6 == id { nm = $3; t = $1 }
+    END { if (t != "") print nm "\t" t }' "$HIST" 2>/dev/null || true)
+  if [ -z "$HIT" ]; then
+    RESUME=(-resume "$EXPLICIT")
+    RESUME_NOTE="session $EXPLICIT (not in this folder's history)"
+  elif input_newer; then
+    RESUME_NOTE="${IN#"$RUN_DIR/"} is newer than every $CMD output, starting fresh"
+  else
+    IFS=$'\t' read -r NAME T <<<"$HIT"
+    RESUME=(-resume "$EXPLICIT")
+    RESUME_NOTE="session $EXPLICIT ($NAME, ${T:0:16})"
+  fi
+else
+  HIT=$(last_launch "$CMD")
+  if [ -z "$HIT" ]; then
+    RESUME_NOTE="no earlier $CMD launch for $RUN_ID, starting fresh"
+  elif input_newer; then
+    RESUME_NOTE="${IN#"$RUN_DIR/"} is newer than every $CMD output, starting fresh"
+  else
+    IFS=$'\t' read -r SID NAME T _ <<<"$HIT"
+    RESUME=(-resume "$SID")
+    RESUME_NOTE="last $CMD launch ($NAME, ${T:0:16}), session $SID"
+  fi
+fi
+
+# Local scratch for work/, NXF_SCRATCH_ROOT or else /tmp/$USER-nf
+SCRATCH="${NXF_SCRATCH_ROOT:-/tmp/$USER-nf}"
+WORK_DIR="$SCRATCH/$RUN_ID"
+# Rtmp must exist or R silently falls back to /tmp and the setting is lost.
+mkdir -p "$RUN_DIR/results" "$RUN_DIR/logs" "$WORK_DIR" "$SCRATCH/Rtmp"
+ln -sfn "$WORK_DIR" "$RUN_DIR/work" # failed task dirs stay reachable from Runs/
+
+# The params file: conf/site.yaml, a project's cosmx-nf.yaml, or both merged
+SETTINGS=""
+if [ -n "$PROJECT" ] && [ -f "$SITE_FILE" ]; then
+  SETTINGS="$RUN_DIR/logs/settings.yaml"
+  merge_settings "$SITE_FILE" "$PROJECT/cosmx-nf.yaml" >"$SETTINGS"
+  SETTINGS_NOTE="conf/site.yaml + $PROJECT/cosmx-nf.yaml"
+elif [ -n "$PROJECT" ]; then
+  SETTINGS="$PROJECT/cosmx-nf.yaml"
+  SETTINGS_NOTE="$SETTINGS (no conf/site.yaml)"
+elif [ -f "$SITE_FILE" ]; then
+  SETTINGS=$SITE_FILE
+  SETTINGS_NOTE="conf/site.yaml"
+else
+  SETTINGS_NOTE="none (conf/site.yaml not found)"
+fi
+SITE=()
+if [ -n "$SETTINGS" ]; then SITE=(-params-file "$SETTINGS"); fi
+
+if [ -n "$PROFILE" ]; then
+  PROFILE_NOTE=$PROFILE
+else
+  if [ -n "$SETTINGS" ]; then
+    PROFILE=$(awk -v q="'" '/^profile:/ { sub(/^profile:[ \t]*/, ""); sub(/[ \t]*(#.*)?$/, "")
+      gsub(/"/, ""); gsub(q, ""); print; exit }' "$SETTINGS")
+  fi
+  if [ -n "$PROFILE" ]; then
+    PROFILE_NOTE="$PROFILE (settings)"
+  else
+    PROFILE=server
+    PROFILE_NOTE="server (default)"
+  fi
+fi
+
+NXF=$(find_nextflow)
+[ -n "$NXF" ] || die "nextflow is not on PATH, in ~/bin or in ~/.local/bin. Install it, or set NXF_BIN"
+NXF_NOTE=""
+if [ -z "${NXF_BIN:-}" ] && ! command -v nextflow >/dev/null 2>&1; then NXF_NOTE="$NXF (not on PATH)"; fi
+
+printf 'run_id  : %s\nstage   : %s\nprofile : %s\n' "$RUN_ID" "$CMD" "$PROFILE_NOTE"
+printf 'results : %s\nwork    : %s (local scratch, NOT backed up)\nlog     : %s\n' \
+  "$RUN_DIR/results" "$WORK_DIR" "$RUN_DIR/logs/nextflow.log"
+printf 'settings: %s\nresume  : %s\n' "$SETTINGS_NOTE" "$RESUME_NOTE"
+[ -z "$NXF_NOTE" ] || printf 'nextflow: %s\n' "$NXF_NOTE"
+detach_note "note    : "
+echo
+
+cd "$LAUNCH"
+"$NXF" -log "$RUN_DIR/logs/nextflow.log" \
+  run "$PIPE_DIR/main.nf" \
+  ${SITE[@]+"${SITE[@]}"} \
+  -profile "$PROFILE" \
+  -work-dir "$WORK_DIR" \
+  --outdir "$RUN_DIR/results" \
+  --run_id "$RUN_ID" \
+  --stage "$CMD" \
+  ${RESUME[@]+"${RESUME[@]}"} \
+  ${ARGS[@]+"${ARGS[@]}"}

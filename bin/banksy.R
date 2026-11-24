@@ -1,8 +1,5 @@
 #!/usr/bin/env Rscript
-## BANKSY niches into the object. banksy_sample.R runs BANKSY on each sample with the pipeline's
-## settings, the row of assets/banksy_variants.csv that banksy_settings names, and writes its
-## niche labels. Here they are named <sample>:<niche>, matched across samples into niche types,
-## written to the object, counted and drawn ##
+## Adds each sample's BANKSY niches to the object and matches them into niche types ##
 a <- commandArgs(trailingOnly = TRUE)
 arg <- function(k, d = "") {
   i <- which(a == paste0("--", k))
@@ -32,6 +29,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -44,7 +42,7 @@ bin <- dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = 
 source(file.path(bin, "cosmx_figures.R"))
 set_fig_format(arg("fig_format", "png"))
 dir.create(opt$outdir, recursive = TRUE, showWarnings = FALSE)
-## Lists from the settings table are separated by ; and lists from params by , ##
+## Lists from the settings table use semicolons, lists from params commas ##
 split_arg <- function(s) {
   v <- trimws(strsplit(s, "[;,]")[[1]])
   v[nzchar(v)]
@@ -66,8 +64,7 @@ pd <- pDataDT(merged)
 samples <- sort(unique(pd[[opt$sample_col]]))
 ct_of <- setNames(pd[[opt$celltype_column]], pd$cell_ID)
 
-## Each sample's niches at the pipeline's resolution, one column per lambda. Rows in the
-## object's order: samples sorted, cells as banksy_prep.R wrote them ##
+## Reads each sample's niches at sample_res as <sample>:<niche>, a column per lambda ##
 per_sample <- rbindlist(lapply(samples, function(s) {
   f <- file.path(opt$labels, paste0(s, "__", opt$variant, "_labels.csv.gz"))
   if (!file.exists(f)) {
@@ -91,10 +88,7 @@ genes_used <- rbindlist(lapply(samples, function(s) {
   )
 }))
 
-## Per-sample niches matched across samples by their typed cells: average linkage on
-## 1 - correlation of their cell-type shares, cut at match_cut. Untyped labels are left out,
-## because their share is large everywhere and makes unrelated niches correlate. A niche
-## without typed cells stays a type of its own ##
+## Clusters all samples' niches into types on typed cell-type shares at match_cut ##
 types <- rbindlist(lapply(lambdas, function(lam) {
   col <- paste0("niche_sample_lam", lam)
   d <- per_sample[, .(niche = get(col), ct = ct_of[cell_ID])]
@@ -222,9 +216,7 @@ write.csv(
   file.path(opt$outdir, "banksy_summary.csv"),
   row.names = FALSE
 )
-## Each sample's niches as the presentation draws them: every cell as its outline, a niche in
-## its type's colour, named by its number and commonest cell types, with the focus cell types
-## drawn over the niches in their own colour and a dark edge ##
+## Maps each sample's niches in their type's colour, focus cell types drawn on top ##
 focus <- split_arg(opt$focus)
 outlines <- cell_outlines(merged)
 for (lam in lambdas) {

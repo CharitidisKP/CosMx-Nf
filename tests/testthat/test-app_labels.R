@@ -1,5 +1,4 @@
-## The app saves its label edits into the run's labels folder, where annotate reads them.
-## Runs the app's server on a made-up run of 60 cells in 3 clusters ##
+## Tests the app's server on a made-up run of 60 cells in 3 clusters ##
 skip_if_not_installed("shiny")
 skip_if_not_installed("bslib")
 skip_if_not_installed("scattermore")
@@ -200,7 +199,7 @@ test_that("figure size scales the plot's text and points, and the plot takes the
     p <- build_plot("umap")
     expect_equal(p$theme$text$size, 6.5)
     expect_equal(p$layers[[1]]$aes_params$size, 0.5)
-    # The page measures the plot's card body; the plot is drawn that tall, 220 px at least
+    # The plot takes the card body's measured height, 220 px at least
     session$setInputs(cosmx_avail = 480)
     expect_equal(avail_h(), 480)
     expect_match(output$ui_umap$html, "height:480px", fixed = TRUE)

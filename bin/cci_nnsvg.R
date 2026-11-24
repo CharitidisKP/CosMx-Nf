@@ -18,6 +18,7 @@ stopifnot(opt$order %in% c("maxmin", "AMMD", "Sum_coords"))
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -28,9 +29,7 @@ suppressPackageStartupMessages({
 })
 dir.create(opt$outdir, recursive = TRUE, showWarnings = FALSE)
 
-## Exact maximum-minimum-distance order: start at the cell nearest the centre, then always take
-## the cell farthest from every cell already ordered. With "maxmin" it replaces BRISC's grid
-## approximation ("AMMD"), which drops cells from overfull grid boxes and then never finishes ##
+## Exact max-min order for BRISC, starting at the cell nearest the centre ##
 order_maxmin_exact <- function(locs) {
   t0 <- Sys.time()
   x <- locs[, 1]

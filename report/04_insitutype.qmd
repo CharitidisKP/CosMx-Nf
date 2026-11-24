@@ -1,0 +1,67 @@
+---
+title: "04 - InSituType, unsupervised"
+subtitle: "Clusters InSituType finds without a reference"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+iu_f <- find_tab("^insitutype_summary\\.csv$")
+co_f <- find_tab("^insitutype_cohorts\\.csv$")
+## Bars of cells per group, largest at the top ##
+size_bars <- function(name, f, col, ylab) {
+  rfig(name, f, function() {
+    d <- read_files(f, colClasses = list(character = 1))
+    d <- d[order(n_cells)]
+    d[, g := factor(get(col), get(col))]
+    ggplot(d, aes(n_cells, g)) +
+      geom_col(fill = TEAL, width = 0.75) +
+      scale_x_continuous(labels = scales::label_comma(), expand = expansion(c(0, 0.04))) +
+      labs(x = "Cells", y = ylab) +
+      theme_report()
+  }, 6.5, 1.2 + 0.22 * max(1, nrow(fread(f[1], header = TRUE, select = 1L))))
+}
+```
+
+Unsupervised InSituType fits a mixture of count profiles, with the number of clusters swept between `insitutype_auto_lo` and `insitutype_auto_hi`. The cohorts let it fit groups of cells separately, from the immunofluorescence channels and the neighbourhood expression.
+
+```{r}
+page_top(
+  stages = "discover",
+  Input = "The clustered object's counts and the CosMx immunofluorescence channels, <code>cohort_vars</code>.",
+  Method = "InSituType with <code>insitutype_n_starts</code> starts, cohorts from <code>cohort_vars</code> and <code>insitutype_nb_pcs</code> neighbourhood PCs over <code>insitutype_nb_k</code> neighbours.",
+  Output = "The <code>insitutype_unsup</code> column on the object, and the tables in <code>tables/04_reference_typing/insitutype_unsup</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Clusters" = function() {
+    if (!length(iu_f)) return(missing_note("InSituType has not run."))
+    tagList(
+      rgallery(list(`Cells per InSituType cluster` = size_bars("insitutype_clusters", iu_f, "cluster", "Cluster")), wide = TRUE),
+      tab("^insitutype_summary\\.csv$", colClasses = list(character = 1), order = "-n_cells")
+    )
+  },
+  "Cohorts" = function() {
+    if (!length(co_f)) return(missing_note("No cohorts in this run."))
+    tagList(
+      rgallery(list(`Cells per cohort` = size_bars("insitutype_cohorts", co_f, "cohort", "Cohort")), wide = TRUE),
+      tab("^insitutype_cohorts\\.csv$", colClasses = list(character = 1), order = "-n_cells")
+    )
+  },
+  "On the UMAP" = function() {
+    fig <- umap_fig("umap_insitutype_unsup", "insitutype_unsup", centroids = TRUE)
+    if (length(fig)) return(rgallery(list(`Unsupervised InSituType clusters on the UMAP` = fig), big = TRUE))
+    gallery_named("04_reference_typing", c("umap_insitutype_unsup.png" = "Unsupervised InSituType clusters"), wide = TRUE, empty = "No UMAP yet.")
+  },
+  "Marker diagnostics" = function() marker_tabs("insitutype_unsup", "InSituType clusters"),
+  ".pipeline" = function() pipeline_figures(figs("04_reference_typing", "^umap_insitutype_unsup\\.png$", FALSE)),
+  "Parameters" = function() {
+    params_table(c("insitutype_auto_lo", "insitutype_auto_hi", "insitutype_n_starts", "insitutype_refine",
+                   "insitutype_conf_threshold", "insitutype_cohort", "cohort_vars", "insitutype_nb_k",
+                   "insitutype_nb_pcs", "insitutype_semi_n"), "discover")
+  }
+)))
+```

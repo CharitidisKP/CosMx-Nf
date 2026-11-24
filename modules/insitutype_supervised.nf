@@ -1,5 +1,4 @@
-// One task per reference profile, emitting per-cell CSVs; ATTACH_SUPERVISED folds them onto
-// the Giotto object in a single write.
+// Types the cells against one reference profile and writes per-cell CSVs
 process SUPERVISED {
     tag { "${id}:${prof.name}" }
     label 'process_insitutype'

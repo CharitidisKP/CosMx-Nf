@@ -1,0 +1,61 @@
+---
+title: "04 - HieraType"
+subtitle: "Cell types called from the marker panel"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+ht_f <- find_tab("^hieratype_summary\\.csv$")
+ht <- read_files(ht_f)
+```
+
+HieraType calls a cell type for each cell from the marker panel, on its own Jaccard graph of the cells. A cell is called only when the winning type is clear of the runner-up, and stays unknown otherwise.
+
+```{r}
+page_top(
+  stages = "discover",
+  Input = "The clustered object and the marker panel, <code>markers</code>.",
+  Method = "HieraType with <code>hieratype_knn_k</code> neighbours, batch-aware on <code>hieratype_batch_column</code>. A call needs a winner above <code>hieratype_call_top</code> and a runner-up below <code>hieratype_call_second</code>.",
+  Output = "The <code>ht_call</code> column on the object, and the tables in <code>tables/04_reference_typing/hieratype</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Calls" = function() {
+    if (is.null(ht)) return(missing_note("HieraType has not run."))
+    fig <- rfig("hieratype_calls", c(ht_f, RUN$label_colours), function() {
+      d <- copy(ht)[order(n_cells)]
+      d[, ht_call := factor(ht_call, ht_call)]
+      ggplot(d, aes(n_cells, ht_call, fill = as.character(ht_call))) +
+        geom_col(width = 0.75, show.legend = FALSE) +
+        geom_text(aes(label = paste0(round(pct, 1), "%")), hjust = -0.15, size = 3, colour = "grey25") +
+        scale_cells(as.character(d$ht_call)) +
+        scale_x_continuous(labels = scales::label_comma(), expand = expansion(c(0, 0.15))) +
+        scale_y_discrete(labels = function(x) display_name(x, STYLE)) +
+        labs(x = "Cells", y = NULL) +
+        theme_report()
+    }, 7, 1.2 + 0.3 * nrow(ht))
+    tagList(
+      if (all(c("ht_call", "pct") %in% names(ht))) {
+        tags$p(sprintf("HieraType called %.1f%% of cells. The rest are unknown.", 100 - sum(ht[ht_call == "unknown", pct])))
+      },
+      rgallery(list(`Cells per HieraType call` = fig), wide = TRUE),
+      hits_table(ht, csv = ht_f, order = "-n_cells"),
+      csv_links(find_tab("^hieratype_(calls|markers)\\.csv$"))
+    )
+  },
+  "On the UMAP" = function() {
+    fig <- umap_cells_fig("umap_ht_call", "ht_call")
+    if (length(fig)) return(rgallery(list(`HieraType calls on the UMAP` = fig), big = TRUE))
+    gallery_named("04_reference_typing", c("umap_ht_call.png" = "HieraType calls"), wide = TRUE, empty = "No UMAP of the calls yet.")
+  },
+  "Marker diagnostics" = function() marker_tabs("ht_call", "HieraType calls"),
+  ".pipeline" = function() pipeline_figures(figs("04_reference_typing", "^umap_ht.+\\.png$", FALSE)),
+  "Parameters" = function() {
+    params_table(c("hieratype_knn_k", "hieratype_batch_column", "hieratype_call_top", "hieratype_call_second"), "discover")
+  }
+)))
+```

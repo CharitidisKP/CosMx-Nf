@@ -1,0 +1,88 @@
+---
+title: "09 - Pseudobulk"
+subtitle: "Each comparison per cell type, paired on the subject"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+ps_f <- find_tab("^pb_summary\\.csv$")
+pd_f <- find_tab("^pb_de\\.csv$")
+ps <- read_files(ps_f)
+pdd <- read_files(pd_f)
+cut <- suppressWarnings(as.numeric(stage_params("de")$pb_fdr %||% config_table()$default[match("pb_fdr", config_table()$name)]))
+if (!is.finite(cut)) cut <- 0.05
+```
+
+Each sample's cells of a cell type are summed into one profile, and each `compare_by` level is compared with `compare_baseline` inside each `compare_within` group, paired on the subject where both sides exist. Every hit is also checked per subject and per FOV.
+
+```{r}
+page_top(
+  stages = "de",
+  Input = "The spatial object's counts, its <code>celltype_column</code> and the samplesheet's study columns.",
+  Method = "Pseudobulk counts per sample and cell type with at least <code>pb_min_cells</code> cells, edgeR's quasi-likelihood test, hits at FDR below <code>pb_fdr</code>, and the direction checked in each subject and in FOVs with at least <code>pb_fov_min_cells</code> cells.",
+  Output = "The tables in <code>tables/09_de/pseudobulk</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Tests" = function() {
+    if (is.null(ps)) return(missing_note("Pseudobulk DE has not run."))
+    ok <- ps[status == "tested"]
+    fig <- if (nrow(ok) && all(c("hits", "hits_agree") %in% names(ok))) {
+      rfig("pb_hits", c(ps_f, RUN$label_colours), function() {
+        m <- intersect(c("hits", "hits_agree", "hits_flagged"), names(ok))
+        lab <- c(hits = "hits", hits_agree = "every subject agrees", hits_flagged = "may be bleed")
+        long <- melt(ok[, c("comparison", "cell_type", m), with = FALSE], id.vars = c("comparison", "cell_type"), variable.name = "what", value.name = "genes")
+        long[, `:=`(what = factor(lab[as.character(what)], lab[m]), cell_type = factor(cell_type, rev(label_levels(cell_type, STYLE))))]
+        ggplot(long, aes(genes, cell_type, fill = what)) +
+          geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+          scale_fill_manual(values = c(hits = TEAL, `every subject agrees` = KEPT, `may be bleed` = WARM)[levels(long$what)], name = NULL) +
+          scale_y_discrete(labels = function(x) display_name(x, STYLE)) +
+          scale_x_continuous(expand = expansion(c(0, 0.04))) +
+          facet_wrap(~comparison, scales = "free_x") +
+          labs(x = "Genes", y = NULL) +
+          theme_report()
+      }, 9, 1.6 + 0.4 * length(unique(ok$cell_type)))
+    }
+    tagList(
+      rgallery(list(`Hits per cell type and comparison` = fig), big = TRUE),
+      hits_table(ps, csv = ps_f, page = 50, note = "hits_agree counts the hits where every subject changes the same way as the pooled change. hits_flagged counts those that neighbouring cells may carry.")
+    )
+  },
+  "Volcanoes" = function() {
+    if (is.null(pdd) || !all(c("comparison", "cell_type", "logFC", "FDR", "gene") %in% names(pdd))) return(missing_note("No genes yet."))
+    comps <- unique(pdd$comparison)
+    items <- lapply(comps, function(cmp) {
+      n_ct <- length(unique(pdd[comparison == cmp & is.finite(FDR), cell_type]))
+      rfig(paste0("pb_volcano_", cmp), pd_f, function() {
+        d <- pdd[comparison == cmp]
+        d[, cell_type := display_name(cell_type, STYLE)]
+        volcano_plot(d, "logFC", "FDR", cut = cut, gene = "gene", facet = "cell_type",
+                     flag = if ("bleed_risk" %in% names(d)) "bleed_risk" else NULL)
+      }, 11, 1.4 + 2.6 * ceiling(n_ct / 3))
+    })
+    ## Comparisons without an FDR, named under the volcanoes ##
+    no_fdr <- setdiff(comps, pdd[is.finite(FDR), comparison])
+    why <- if (length(no_fdr)) {
+      sprintf(" No volcano for %s, which %s effect sizes only (df 0). They are in the full table under Genes.",
+              paste(no_fdr, collapse = " and "), if (length(no_fdr) > 1) "have" else "has")
+    }
+    tagList(
+      rpicker(stats::setNames(items, comps)),
+      tags$p(class = "table-note", paste0("A panel stops a quarter past its largest hit, or at three times the upper quartile of its genes when it has none, and genes past that sit at its edge.", why))
+    )
+  },
+  "Genes" = function() {
+    tab("^pb_de\\.csv$", order = "FDR", note = "bleed_risk marks genes that neighbouring cells of other types carry far more of than the cell type at baseline.")
+  },
+  ".links" = function() csv_links(find_tab("^pb_(per_subject_lfc|design)\\.csv$|^pb_counts\\.csv\\.gz$")),
+  ".pipeline" = function() pipeline_figures(figs("09_de", "^pb_.+\\.png$", FALSE)),
+  "Parameters" = function() {
+    params_table(c("compare_by", "compare_baseline", "compare_within", "pair_by", "pb_min_cells", "pb_fov_min_cells",
+                   "pb_fdr", "pb_interaction", "pb_overlap_flag"), "de")
+  }
+)))
+```

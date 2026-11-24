@@ -28,6 +28,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -213,8 +214,7 @@ if (is.null(pre)) {
   finish()
 }
 
-## smi_de builds otherct_expr from the cells in assay_matrix, so it holds the whole
-## sample. Neighbour counts are scaled to the mean library size first ##
+## Whole-sample counts for otherct_expr, neighbours scaled to the mean library size ##
 assay <- as.matrix(raw[targets, ])
 scalefactor <- setNames(mean(meta$nCount_RNA) / meta$nCount_RNA, meta$cell_ID)
 fmla <- if (nzchar(opt$formula)) {
@@ -303,8 +303,7 @@ for (sm in split_arg(opt$spatial_model)) {
     d[, fdr := p.adjust(p.value, "BH"), by = result_component]
   }
   res[[sm]] <- d
-  ## smiDE's own volcano of each niche against the rest, the fit's contrasts on one sheet. A
-  ## figure that fails costs only the figure ##
+  ## smiDE's volcano of each niche against the rest, skipped if it fails ##
   ovr <- r[["one.vs.rest"]]
   if (!is.null(ovr) && nrow(ovr)) {
     tryCatch(

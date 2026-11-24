@@ -8,10 +8,11 @@ include { SMIDE }        from '../modules/smide'
 include { SMIDE_META }   from '../modules/smide_meta'
 include { SMIDE_OVERLAP } from '../modules/smide_overlap'
 include { PSEUDOBULK_DE } from '../modules/pseudobulk_de'
+include { BUNDLE }       from '../modules/bundle'
 include { isIncluded }   from './samplesheet'
 
-// Attach cell_type from the run's label state, and count it. Nothing spatial.
-// state: basis, labels (the cluster labels CSV), overrides (the per-cell edits) and digest
+// Attaches cell_type from the run's label state, counts it and runs composition
+// state: the basis, cluster labels, per-cell edits and digest from label_state
 workflow ANNOTATION {
     take:
         merged_giotto
@@ -23,15 +24,20 @@ workflow ANNOTATION {
         ch = Channel.value( tuple('merged', file(merged_giotto), file(state.labels), file(state.overrides), st) )
         APPLY_LABELS(ch)
         COMPOSITION(APPLY_LABELS.out.obj, file(params.input))
+        // The app bundle from the labelled object, its cells table passed on to REPORT
+        def ch_bundle = channel.empty()
+        if (params.bundle.toString().toBoolean()) {
+            BUNDLE(APPLY_LABELS.out.obj)
+            ch_bundle = BUNDLE.out.cells
+        }
 
     emit:
         annotated = APPLY_LABELS.out.obj
         counts    = APPLY_LABELS.out.tables.flatten().filter { f -> f.name == 'cell_type_counts.csv' }
-        tables    = APPLY_LABELS.out.tables.mix(COMPOSITION.out.tables)
+        tables    = APPLY_LABELS.out.tables.mix(COMPOSITION.out.tables, ch_bundle)
 }
 
-// The spatial stage's BANKSY settings: the row of banksy_variants that banksy_settings names, at
-// the pipeline's lambdas and resolution
+// The banksy_settings row, with the pipeline's lambdas and resolution
 def banksy_settings() {
     def rows = file(params.banksy_variants).splitCsv(header: true)
     def row = rows.find { r -> r.variant == params.banksy_settings.toString() }
@@ -46,11 +52,8 @@ def banksy_key(v) {
     "${v.sort()}|${params.banksy_hvgs}|${params.banksy_bg_mult}|${params.banksy_match_cut}".toString().md5()
 }
 
-// Delaunay network with proximity enrichment, then BANKSY domains: each sample in its own task,
-// then its niches matched across samples. B-lineage subclustering and immune densities need
-// neither, so they run beside BANKSY.
-// digest: the label state of the labelled object, recorded beside the spatial one with the
-// BANKSY settings' digest
+// Runs the Delaunay network, BANKSY, B-lineage subclustering and immune densities
+// digest: the label state, saved beside the spatial object with the BANKSY digest
 workflow SPATIAL {
     take:
         labelled
@@ -75,11 +78,8 @@ workflow SPATIAL {
         tables  = SPATIAL_NET.out.tables.mix(BANKSY.out.tables, BCELL.out.tables, IMMUNE_DENSITY.out.tables)
 }
 
-// smiDE is per-sample by construction: the spatial model is per-tissue and the
-// merged object is shift-joined. Fan out over (sample x cell type), gather by meta-analysis.
-// Pseudobulk DE beside it tests compare_by per cell type across samples, paired on pair_by.
-// counts: annotate's cell_type_counts.csv, whose typed labels are the cell types tested when
-// smide_celltypes is empty
+// Runs smiDE per sample and cell type, its meta-analysis, and pseudobulk DE
+// counts: annotate's cell_type_counts.csv, read when smide_celltypes is empty
 workflow DE {
     take:
         spatial

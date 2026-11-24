@@ -18,6 +18,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -69,8 +70,7 @@ de <- suppressWarnings(findMarkers_one_vs_all(
 ))
 top <- de[, head(.SD[order(ranking)], opt$top_n), by = cluster]
 
-## Marker scores: z per gene across clusters, then averaged over each panel.
-## Genes below min_detection are left out, their small sd turns noise into specificity ##
+## Cluster means per gene, z-scored for genes detected at min_detection or more ##
 genes_all <- intersect(unique(mk$gene), rownames(norm_mat))
 detected <- Matrix::rowMeans(norm_mat[genes_all, , drop = FALSE] > 0)
 genes_use <- genes_all[detected >= opt$min_detection]

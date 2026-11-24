@@ -18,6 +18,8 @@ process CLUSTER {
 
     script:
     """
+    export OMP_NUM_THREADS=${task.cpus} OPENBLAS_NUM_THREADS=${task.cpus} MKL_NUM_THREADS=${task.cpus} BLIS_NUM_THREADS=${task.cpus}
+
     cluster.R --input '${obj}' --reduction_file '${red}' \\
         --knn_k ${params.knn_k} --n_iterations ${params.n_iterations} \\
         --leiden_res_ladder '${params.leiden_res_ladder}' --umap_resolutions '${params.chosen_resolutions}' \\

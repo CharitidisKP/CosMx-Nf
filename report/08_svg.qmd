@@ -1,0 +1,66 @@
+---
+title: "08 - SPARK-X and nnSVG"
+subtitle: "Genes whose expression follows space"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+sx_f <- find_tab("^sparkx_svgs\\.csv$")
+nv_f <- find_tab("^nnsvg_spatially_variable_genes\\.csv$")
+sx <- read_files(sx_f)
+nv <- read_files(nv_f)
+```
+
+SPARK-X tests every gene in each sample for a spatial pattern. nnSVG then measures, on the SPARK-X hits, how much of each gene's variance is spatial.
+
+```{r}
+page_top(
+  stages = "cci",
+  Input = "The spatial object's counts and positions, per sample.",
+  Method = "SPARK-X with hits at FDR below <code>sparkx_fdr</code>, then nnSVG on them with the <code>nnsvg_order</code> cell order when <code>run_nnsvg</code> is on.",
+  Output = "The tables in <code>tables/08_cci/sparkx</code> and <code>tables/08_cci/nnsvg</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "SPARK-X" = function() {
+    if (is.null(sx) || !all(c("sample", "significant") %in% names(sx))) return(missing_note("SPARK-X has not run."))
+    fig <- rfig("sparkx_counts", sx_f, function() {
+      d <- sx[, .(hits = sum(significant %in% TRUE), tested = .N), by = sample][, sample := factor(sample, rev(sample_levels(sample)))]
+      ggplot(d, aes(hits, sample)) +
+        geom_col(fill = TEAL, width = 0.7) +
+        geom_text(aes(label = paste0(fmt_n(hits), " of ", fmt_n(tested))), hjust = -0.1, size = 2.8, colour = "grey30") +
+        scale_x_continuous(expand = expansion(c(0, 0.3))) +
+        labs(x = "Spatially variable genes", y = NULL) +
+        theme_report()
+    }, 7, 1.2 + 0.3 * length(unique(sx$sample)))
+    tagList(
+      rgallery(list(`Spatially variable genes per sample` = fig), wide = TRUE),
+      hits_table(sx, csv = sx_f, order = "adjustedPval")
+    )
+  },
+  "nnSVG" = function() {
+    if (is.null(nv) || !all(c("sample", "gene", "prop_sv") %in% names(nv))) return(missing_note("nnSVG has not run."))
+    fig <- rfig("nnsvg_top", nv_f, function() {
+      d <- nv[order(-prop_sv)][, head(.SD, 12), by = sample]
+      d[, gene := reorder(paste(gene, sample, sep = "___"), prop_sv)]
+      ggplot(d, aes(prop_sv, gene)) +
+        geom_col(fill = TEAL, width = 0.7) +
+        scale_y_discrete(labels = function(x) sub("___.*$", "", x)) +
+        scale_x_continuous(labels = scales::label_percent(), expand = expansion(c(0, 0.02))) +
+        facet_wrap(~sample, scales = "free_y") +
+        labs(x = "Share of the gene's variance that is spatial", y = NULL) +
+        theme_report()
+    }, 10, 1.6 + 2.6 * ceiling(length(unique(nv$sample)) / 3))
+    tagList(
+      rgallery(list(`The 12 genes with the most spatial variance in each sample` = fig), big = TRUE),
+      hits_table(nv, csv = nv_f, order = "padj", note = "prop_sv is the share of a gene's variance that is spatial.")
+    )
+  },
+  ".pipeline" = function() pipeline_figures(c(figs("08_cci/sparkx", "\\.png$", FALSE), figs("08_cci/nnsvg", "\\.png$", FALSE))),
+  "Parameters" = function() params_table(c("sparkx_fdr", "run_nnsvg", "nnsvg_use_sparkx", "nnsvg_max_genes", "nnsvg_order"), "cci")
+)))
+```

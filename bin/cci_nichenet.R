@@ -26,6 +26,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -67,8 +68,7 @@ rm(merged)
 invisible(gc())
 detection <- function(ids) Matrix::rowMeans(norm[, ids, drop = FALSE] > 0)
 
-## Comparisons come from the samplesheet: each level of compare_by against the
-## baseline, inside each compare_within group ##
+## Each level of compare_by against the baseline, inside each compare_within group ##
 ss <- fread(opt$samplesheet, colClasses = "character")
 ss <- ss[sample_id %in% pd[[opt$sample_col]]]
 within <- split_arg(opt$compare_within)
@@ -101,8 +101,7 @@ if (!nrow(cmp)) {
   )
 }
 
-## The gene set is what changes in the receiver between the two sides. Blocked on
-## subject when every subject has both, so pairs compare within the person ##
+## Ligand activities for one receiver from its genes up on the case side ##
 run_one <- function(g, l, r) {
   name <- paste0(g, ": ", l, " vs ", opt$compare_baseline)
   side <- ss[grp == g, setNames(get(opt$compare_by), sample_id)]

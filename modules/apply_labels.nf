@@ -3,8 +3,7 @@ process APPLY_LABELS {
     label 'process_light'
     publishDir path: { "${params.outdir}/figures/06_annotation" }, mode: 'copy', pattern: "*.{png,pdf,jpg}"
     publishDir path: { "${params.outdir}/tables/06_annotation" }, mode: 'copy', pattern: "*.csv"
-    // The labelled object is what --stage spatial picks up by default, with the label state it
-    // was built from beside it
+    // The labelled object for the spatial stage, with its label state
     publishDir path: { "${params.outdir}/objects/annotate" }, mode: 'copy', pattern: "{giotto,label_state.txt}"
 
     input:

@@ -1,0 +1,97 @@
+---
+title: "07 - Niches"
+subtitle: "BANKSY niches per sample, matched into niche types"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+bk_f <- find_tab("^banksy_summary\\.csv$")
+nc_f <- find_tab("^niche_by_celltype\\.csv$")
+ns_f <- find_tab("^niche_by_sample\\.csv$")
+nc <- read_files(nc_f, colClasses = c(lambda = "character"))
+ns <- read_files(ns_f, colClasses = c(lambda = "character"))
+lambdas <- if (!is.null(nc)) sort(unique(nc$lambda)) else character()
+n_types <- function(l) length(unique(nc[lambda == l & startsWith(column, "niche_type"), niche]))
+## A niche map's kind and lambda as a tab name ##
+map_kind <- function(k) {
+  lam <- sub("^.*_lam", "", k)
+  what <- c(niche_type = "Niche types", niche_sample = "Each sample's niches", niche_id = "Joint niches")
+  w <- what[sub("_lam.*$", "", k)]
+  paste0(ifelse(is.na(w), sub("_lam.*$", "", k), w), ", lambda ", lam)
+}
+```
+
+BANKSY finds niches in each sample from each cell's own expression and its neighbours'. Niches whose cell-type mixes match across samples become one niche type.
+
+```{r}
+page_top(
+  stages = "spatial",
+  Input = "The annotate object, its <code>celltype_column</code>, and the <code>banksy_settings</code> row of <code>banksy_variants</code>.",
+  Method = "BANKSY per sample at each lambda of <code>banksy_lambda_ladder</code>, Leiden at <code>banksy_sample_res</code>, then niches matched into types when their cell-type mixes correlate above 1 minus <code>banksy_match_cut</code>.",
+  Output = "The <code>niche_sample_lam</code> and <code>niche_type_lam</code> columns on the spatial object, and the tables in <code>tables/07_spatial/banksy</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Settings and counts" = function() {
+    tagList(plain_table(read_files(bk_f, colClasses = c(lambda = "character"))), csv_links(bk_f))
+  },
+  "Cell types in each niche type" = function() {
+    if (is.null(nc)) return(missing_note("No niches yet."))
+    items <- lapply(lambdas, function(l) {
+      rfig(paste0("niche_types_cells_", l), c(nc_f, RUN$label_colours), function() {
+        d <- nc[lambda == l & startsWith(column, "niche_type")]
+        d[, share := n_cells / sum(n_cells), by = niche]
+        d[, niche := factor(niche, rev(niche_levels(niche)))]
+        d[, cell_type := factor(cell_type, label_levels(cell_type, STYLE))]
+        heat_plot(d, "cell_type", "niche", "share", name = "Share of the\nniche's cells") +
+          scale_x_discrete(labels = function(x) display_name(x, STYLE))
+      }, heat_size(length(unique(nc$cell_type)), n_types(l))[["w"]], heat_size(length(unique(nc$cell_type)), n_types(l))[["h"]] + 0.6)
+    })
+    tagList(
+      rpicker(stats::setNames(items, paste("Lambda", lambdas))),
+      tags$p(class = "table-note", "Each niche type's cells by cell type, as shares of the niche type."),
+      tab("^niche_types\\.csv$", colClasses = c(lambda = "character"), note = "Each sample's niches, matched across samples into types by their cell-type mix."),
+      csv_links(c(nc_f, find_tab("^niche_type_vs_merged\\.csv$|^banksy_genes\\.csv$")))
+    )
+  },
+  "Niche types per sample" = function() {
+    if (is.null(ns)) return(missing_note("No niches yet."))
+    items <- lapply(lambdas, function(l) {
+      rfig(paste0("niche_types_samples_", l), ns_f, function() {
+        d <- ns[lambda == l & startsWith(column, "niche_type")]
+        d[, share := n_cells / sum(n_cells), by = sample]
+        lv <- niche_levels(d$niche)
+        d[, `:=`(niche = factor(niche, lv), sample = factor(sample, rev(sample_levels(sample))))]
+        ggplot(d, aes(share, sample, fill = niche)) +
+          geom_col(width = 0.8, position = position_stack(reverse = TRUE)) +
+          scale_fill_manual(values = niche_colours(lv), name = NULL, guide = guide_legend(ncol = 1)) +
+          scale_x_continuous(labels = scales::label_percent(), expand = expansion(c(0, 0.01))) +
+          labs(x = "Share of the sample's cells", y = NULL) +
+          theme_report()
+      }, 8, 1.4 + 0.42 * length(unique(ns$sample)))
+    })
+    tagList(
+      rpicker(stats::setNames(items, paste("Lambda", lambdas))),
+      csv_links(ns_f)
+    )
+  },
+  "Niche maps" = function() {
+    f <- figs("07_spatial/banksy", "^niche_spatial_.+\\.png$", FALSE)
+    if (!length(f)) return(missing_note("No niche maps yet."))
+    kind <- sub("^niche_spatial_.+?_(niche_[a-z]+_lam[0-9.]+)\\.png$", "\\1", basename(f))
+    smp <- sub("^niche_spatial_(.+?)_niche_[a-z]+_lam[0-9.]+\\.png$", "\\1", basename(f))
+    ks <- unique(kind)
+    ks <- ks[order(!startsWith(ks, "niche_type"), ks)]
+    tabs(setNames(lapply(ks, function(k) figure_picker(f[kind == k], smp[kind == k])), map_kind(ks)))
+  },
+  ".pipeline" = function() pipeline_figures(figs("07_spatial/banksy", "heatmap.+\\.png$", FALSE)),
+  "Parameters" = function() {
+    params_table(c("banksy_settings", "banksy_hvgs", "banksy_bg_mult", "banksy_lambda_ladder", "banksy_sample_res",
+                   "banksy_match_cut", "niche_map_focus"), "spatial")
+  }
+)))
+```

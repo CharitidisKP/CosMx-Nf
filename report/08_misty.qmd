@@ -1,0 +1,88 @@
+---
+title: "08 - MISTy"
+subtitle: "How much of each gene the surroundings explain"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+mi_f <- find_tab("^misty_improvements\\.csv$")
+mc_f <- find_tab("^misty_contributions\\.csv$")
+im_f <- find_tab("^misty_importances\\.csv$")
+mi <- read_files(mi_f)
+top_targets <- if (!is.null(mi) && "measure" %in% names(mi)) {
+  mi[measure == "gain.R2", .(gain = mean(value, na.rm = TRUE)), by = target][order(-gain)][seq_len(min(.N, 30)), target]
+} else {
+  character()
+}
+```
+
+MISTy models each target gene in each sample from the cell's own genes, its direct neighbours and wider areas around it, and reports how much the surroundings add.
+
+```{r}
+page_top(
+  stages = "cci",
+  Input = "The spatial object's genes and positions, per sample with at least <code>misty_min_cells</code> cells.",
+  Method = "An intra view, a juxta view within <code>misty_juxta_thr</code> and para views at each length scale of <code>misty_para_ls</code>, in one model per sample.",
+  Output = "The tables in <code>tables/08_cci/misty</code>."
+)
+```
+
+```{r}
+#| output: asis
+cat(render_tree(list(
+  "Gain from the surroundings" = function() {
+    if (!length(top_targets)) return(missing_note("MISTy has not run."))
+    fig <- rfig("misty_gain", mi_f, function() {
+      d <- mi[measure == "gain.R2" & target %in% top_targets]
+      m <- d[, .(gain = mean(value, na.rm = TRUE)), by = target]
+      lv <- m[order(gain), target]
+      d[, target := factor(target, lv)]
+      m[, target := factor(target, lv)]
+      ggplot(m, aes(gain, target)) +
+        geom_col(fill = KEPT, width = 0.75) +
+        geom_point(data = d, aes(value, target), colour = TEAL, size = 1.2, alpha = 0.8) +
+        labs(x = "Gain in R2 from the surroundings", y = NULL) +
+        theme_report()
+    }, 7, 1.4 + 0.22 * length(top_targets))
+    d <- mi[measure == "gain.R2"]
+    tagList(
+      rgallery(list(`The 30 targets the surroundings explain best. Bars: mean over samples, dots: each sample` = fig), wide = TRUE),
+      hits_table(d, csv = mi_f, order = "-value", note = "The gain in R2 when a target's surroundings join its own cell. The full table also holds the other measures.")
+    )
+  },
+  "Which view adds it" = function() {
+    mc <- read_files(mc_f)
+    if (is.null(mc) || !length(top_targets)) return(missing_note("No view contributions yet."))
+    fig <- rfig("misty_views", c(mc_f, mi_f), function() {
+      d <- mc[target %in% top_targets & !startsWith(view, "p.") & view != "intercept", .(value = mean(value, na.rm = TRUE)), by = .(target, view)]
+      d[, target := factor(target, rev(top_targets))]
+      views <- sort(unique(d$view))
+      ggplot(d, aes(value, target, fill = view)) +
+        geom_col(width = 0.75, position = position_fill(reverse = TRUE)) +
+        scale_fill_manual(values = stats::setNames(NICHE_COLOURS[seq_along(views)], views), name = "View") +
+        scale_x_continuous(labels = scales::label_percent(), expand = expansion(c(0, 0.01))) +
+        labs(x = "Share of the model", y = NULL) +
+        theme_report()
+    }, 8, 1.4 + 0.22 * length(top_targets))
+    rgallery(list(`Each view's share of the model for the same targets` = fig), wide = TRUE)
+  },
+  "Predictors" = function() {
+    if (!length(im_f) || !length(top_targets)) return(missing_note("No importances yet."))
+    im <- read_files(im_f)
+    views <- sort(setdiff(unique(im$view), "intra"))
+    items <- lapply(views, function(v) {
+      rfig(paste0("misty_importance_", v), c(im_f, mi_f), function() {
+        d <- im[view == v & Target %in% top_targets[seq_len(min(20, length(top_targets)))], .(imp = mean(Importance, na.rm = TRUE)), by = .(Predictor, Target)]
+        keep <- d[, .(m = max(imp, na.rm = TRUE)), by = Predictor][order(-m)][seq_len(min(.N, 25)), Predictor]
+        d <- d[Predictor %in% keep]
+        d[, `:=`(Predictor = factor(Predictor, rev(keep)), Target = factor(Target, top_targets))]
+        heat_plot(d, "Target", "Predictor", "imp", name = "Mean\nimportance")
+      }, 8, 7)
+    })
+    rpicker(stats::setNames(items, paste("View", views)))
+  },
+  ".pipeline" = function() pipeline_figures(figs("08_cci/misty", "\\.png$", FALSE)),
+  "Parameters" = function() params_table(c("misty_juxta_thr", "misty_para_ls", "misty_min_cells"), "cci")
+)))
+```

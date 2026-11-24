@@ -1,0 +1,99 @@
+---
+title: "04 - InSituType, supervised"
+subtitle: "Each cell's type against each reference profile"
+---
+
+```{r}
+source("_helpers.R")
+source("_figures.R")
+conf_f <- find_tab("^insitutype_sup_.+_confidence\\.csv$")
+profiles <- sub("^insitutype_sup_(.+)_confidence\\.csv$", "\\1", basename(conf_f))
+names(conf_f) <- profiles
+```
+
+Supervised InSituType assigns each cell to the closest cell type of a reference profile, with no new clusters. Each profile in `supervised_profiles` is its own pass, with a score per call.
+
+```{r}
+page_top(
+  stages = c("discover", "supervised"),
+  Input = "The clustered object's counts and each reference profile, <code>profile_dir/&lt;name&gt;</code>.",
+  Method = "<code>InSituType::insitutype</code> with <code>n_clusts = 0</code> for each profile sharing at least <code>supervised_min_gene_overlap</code> genes with the panel.",
+  Output = "One <code>insitutype_sup_&lt;profile&gt;</code> column per profile on the object, and the tables in <code>tables/04_reference_typing/supervised</code>."
+)
+```
+
+```{r}
+#| output: asis
+per_profile <- setNames(lapply(profiles, function(p) {
+  local({
+    f <- conf_f[[p]]
+    list(
+      "Calls" = function() {
+        d <- fread(f, header = TRUE)
+        fig <- rfig(paste0("sup_conf_", p), c(f, RUN$label_colours), function() {
+          e <- d[n_cells > 0][order(n_cells)]
+          e[, cell_type := factor(cell_type, cell_type)]
+          a <- ggplot(e, aes(n_cells, cell_type, fill = as.character(cell_type))) +
+            geom_col(width = 0.75, show.legend = FALSE) +
+            scale_cells(as.character(e$cell_type)) +
+            scale_x_continuous(labels = scales::label_comma(), expand = expansion(c(0, 0.04))) +
+            scale_y_discrete(labels = function(x) display_name(x, STYLE)) +
+            labs(x = "Cells", y = NULL) +
+            theme_report()
+          b <- ggplot(e, aes(frac_score_0.8, cell_type)) +
+            geom_segment(aes(x = 0, xend = frac_score_0.8, yend = cell_type), colour = PALE) +
+            geom_point(colour = TEAL, size = 2) +
+            scale_x_continuous(labels = scales::label_percent(), limits = c(0, 1)) +
+            labs(x = "Calls scoring 0.8 or more", y = NULL) +
+            theme_report() +
+            theme(axis.text.y = element_blank())
+          (a | b) + plot_layout(widths = c(2, 1))
+        }, 9, 1.3 + 0.24 * sum(d$n_cells > 0))
+        tagList(
+          rgallery(list(`Cells per cell type, and the share of calls that score 0.8 or more` = fig), big = TRUE),
+          tab(paste0("^insitutype_sup_", rx(p), "_confidence\\.csv$"), order = "-n_cells"),
+          csv_links(find_tab(paste0("^insitutype_sup_", rx(p), "_(summary|profiles|cells)\\.csv$")))
+        )
+      },
+      "On the UMAP" = function() {
+        fig <- umap_cells_fig(paste0("umap_sup_", p), paste0("insitutype_sup_", p))
+        if (length(fig)) return(rgallery(stats::setNames(list(fig), paste("Calls against", p, "on the UMAP")), big = TRUE))
+        gallery_named("04_reference_typing", stats::setNames(paste("Supervised InSituType,", p), paste0("umap_insitutype_sup_", p, ".png")),
+                      wide = TRUE, empty = "No UMAP yet.")
+      },
+      "Marker diagnostics" = function() marker_tabs(paste0("insitutype_sup_", p), paste("Calls against", p))
+    )
+  })
+}), profiles)
+cat(render_tree(c(
+  list("Profiles" = function() {
+    if (!length(conf_f)) return(missing_note("No supervised passes yet."))
+    sup <- rbindlist(lapply(profiles, function(p) {
+      d <- fread(conf_f[[p]], header = TRUE)
+      if (!all(c("n_cells", "frac_score_0.8", "cell_type") %in% names(d))) return(NULL)
+      d <- d[order(-n_cells)]
+      data.table(
+        profile = p, types_used = sum(d$n_cells > 0),
+        pct_score_0.8 = round(100 * sum(d$n_cells * d$frac_score_0.8) / sum(d$n_cells), 1),
+        largest_types = paste(head(d$cell_type, 4), collapse = ", ")
+      )
+    }))
+    fig <- rfig("sup_profiles", conf_f, function() {
+      ggplot(sup, aes(pct_score_0.8, factor(profile, rev(profile)))) +
+        geom_col(fill = TEAL, width = 0.7) +
+        scale_x_continuous(limits = c(0, 100), expand = expansion(c(0, 0.02))) +
+        labs(x = "Cells whose call scores 0.8 or more (%)", y = NULL) +
+        theme_report()
+    }, 6.5, 1.2 + 0.4 * nrow(sup))
+    tagList(
+      rgallery(list(`How confidently each profile calls the cells` = fig), wide = TRUE),
+      plain_table(sup)
+    )
+  }),
+  per_profile,
+  list(
+    ".pipeline" = function() pipeline_figures(figs("04_reference_typing", "^umap_insitutype_sup_.+\\.png$", FALSE)),
+    "Parameters" = function() params_table(c("supervised_profiles", "supervised_min_gene_overlap"), latest_stage(c("discover", "supervised")))
+  )
+)))
+```

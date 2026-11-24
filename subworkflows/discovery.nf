@@ -7,6 +7,7 @@ include { HIERATYPE         } from '../modules/hieratype'
 include { INSITUTYPE        } from '../modules/insitutype'
 include { SUPERVISED ; ATTACH_SUPERVISED } from '../modules/insitutype_supervised'
 include { DIAGNOSTICS       } from '../modules/diagnostics'
+include { CLUSTER_CHECKS    } from '../modules/cluster_checks'
 include { SOLO              } from './solo'
 include { isIncluded        } from './samplesheet'
 
@@ -66,6 +67,14 @@ workflow DISCOVERY {
             HIERATYPE.out.tables, INSITUTYPE.out.tables
         )
 
+        // The discovery checks, beside HieraType on the clustered object
+        def ch_pick = channel.empty()
+        if (params.checks.toString().toBoolean()) {
+            CLUSTER_CHECKS( CLUSTER.out.obj.map { id, obj, red -> tuple(id, obj, red.text.trim()) } )
+            ch_tables = ch_tables.mix(CLUSTER_CHECKS.out.tables)
+            ch_pick = CLUSTER_CHECKS.out.picked.map { f -> f.text.trim() }
+        }
+
         if (profs) {
             SUPERVISED(INSITUTYPE.out.obj.combine(Channel.fromList(profs)))
             ch_tables = ch_tables.mix(SUPERVISED.out.tables)
@@ -87,11 +96,13 @@ workflow DISCOVERY {
             }
             .flatten()
         diag_cols = params.chosen_resolutions.toString().split(',').collect { "leiden_clus_res${it.trim()}" } + ['ht_call', 'insitutype_unsup'] + sup_cols
-        DIAGNOSTICS(ch_merged.combine(Channel.fromList(diag_cols)))
+        // The chosen columns and the stability check's pick, each once
+        def ch_cols = channel.fromList(diag_cols.collect { c -> c.toString() }).mix(ch_pick).unique()
+        DIAGNOSTICS(ch_merged.combine(ch_cols))
         ch_tables = ch_tables.mix(DIAGNOSTICS.out.tables)
     }
 
-    // Opt-in: take named samples through integrate -> cluster -> insitutype -> diagnostics on their own.
+    // Runs the --solo samples through discovery on their own
     if (solo_ids) {
         SOLO(QC.out.obj.filter { meta, obj -> solo_ids.contains(meta.id) })
     }

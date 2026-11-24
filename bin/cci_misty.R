@@ -21,6 +21,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -72,9 +73,7 @@ f <- file.path(
   paste0("misty_", gsub("[^A-Za-z0-9]+", "_", opt$sample))
 )
 
-## A folder from an earlier run is copied instead of refitted when it is finished with these
-## settings: one performance row per target and an importance file per target for each view
-## this run asks for, named as mistyR names them (intra, juxta.<thr>, para.<l>) ##
+## Reuses the folder in reuse_dir when it has every target and view asked for ##
 prev <- if (nzchar(opt$reuse_dir)) file.path(opt$reuse_dir, basename(f)) else ""
 views_ab <- c("intra", paste0("juxta.", opt$juxta_thr), paste0("para.", para_ls))
 imp <- if (nzchar(prev)) list.files(prev, "^importances_") else character()
@@ -103,8 +102,7 @@ if (finished) {
 }
 
 ## Write ##
-## The key takes the collect step from the folder back to the sample, and from each
-## syntactic target name back to the gene ##
+## Key from each folder to its sample and from each target name to its gene ##
 fwrite(
   data.table(
     folder = basename(f),

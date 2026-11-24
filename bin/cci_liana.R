@@ -17,6 +17,7 @@ opt <- list(
 
 if (nzchar(opt$python)) {
   Sys.setenv(RETICULATE_PYTHON = opt$python)
+  options(giotto.py_path = opt$python)
 }
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 suppressPackageStartupMessages({
@@ -46,8 +47,7 @@ sce <- SingleCellExperiment(
 exclude <- trimws(strsplit(opt$exclude, ",")[[1]])
 sce <- sce[, !is.na(sce$cell_type) & !sce$cell_type %in% exclude]
 
-## Contact weight: the share of target cells with a source cell among their Delaunay
-## neighbours. Pairs that never touch get 0, which liana drops ##
+## Contact weight, the share of target cells with a source-type Delaunay neighbour ##
 ct_of <- setNames(pd[[opt$celltype_column]], pd$cell_ID)
 net <- getSpatialNetwork(
   merged,

@@ -1,0 +1,55 @@
+---
+title: "Run status"
+subtitle: "When each stage last ran, how it ended and whether its outputs are current"
+---
+
+```{r}
+source("_helpers.R")
+```
+
+Each stage is its own launch. The result comes from Nextflow's history of this run's launches, as `cosmx-nf `r RUN$id`` reports it. A stage is **outdated** when everything it wrote is older than the object it reads, because that object was rebuilt after it ran.
+
+## Stages
+
+```{r}
+st <- lapply(STAGES, stage_status)
+st <- st[vapply(st, function(x) x$state != "none" || x$stage %in% c("discover", "annotate", "spatial", "cci", "de"), logical(1))]
+tags$table(
+  class = "table table-sm plain",
+  tags$thead(tags$tr(
+    tags$th("Stage"), tags$th("Result"), tags$th("Last launch"), tags$th("Took"),
+    tags$th("Launches"), tags$th("Options")
+  )),
+  tags$tbody(lapply(st, function(x) {
+    tags$tr(
+      tags$td(tags$code(x$stage)), tags$td(badge(x)), tags$td(x$time), tags$td(x$duration),
+      tags$td(if (x$launches) x$launches else ""), tags$td(if (nzchar(x$options)) tags$code(x$options))
+    )
+  }))
+)
+```
+
+```{r}
+if (!nrow(launches())) {
+  tags$p(class = "table-note", "This build found no launch history, so each stage is judged by the files in results/.")
+}
+```
+
+- **done**: the last launch finished, or the stage's outputs are in `results/` from a launch in another folder.
+- **outdated**: the stage finished before the object it reads was rebuilt.
+- **running now**: the launch that built this site.
+- **failed** or **stopped**: the last launch ended with an error, or was stopped before the end.
+- **not run**: no launch and no outputs.
+
+## Labels
+
+```{r}
+lab <- labels_state()
+tags$p(badge(lab), " ", lab$text)
+```
+
+## Commands
+
+- `cosmx-nf `r RUN$id`` shows the same status in the terminal and names the next command.
+- `cosmx-nf `r RUN$id` <stage>` runs a stage. It resumes the stage's last launch.
+- `cosmx-nf `r RUN$id` report` rebuilds this site from what is in `results/`.

@@ -12,6 +12,6 @@ process CCI_INSITUCOR {
     script:
     """
     cci_insitucor.R --input '${obj}' --celltype_column '${params.celltype_column}' \\
-        --k ${params.insitucor_k} --outdir . --python '${params.python_path}'
+        --k ${params.insitucor_k} --seed ${params.seed} --outdir . --python '${params.python_path}'
     """
 }

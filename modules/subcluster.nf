@@ -7,7 +7,7 @@ process SUBCLUSTER {
     publishDir path: { "${params.outdir}/objects/subcluster" }, mode: 'copy', pattern: "giotto"
 
     input:
-        tuple val(id), path(obj, stageAs: 'input_giotto')
+        tuple val(id), path(obj, stageAs: 'input_giotto'), val(basis)
 
     output:
         tuple val(id), path("giotto"), emit: obj
@@ -17,7 +17,7 @@ process SUBCLUSTER {
 
     script:
     """
-    subcluster.R --input '${obj}' --basis '${params.subcluster_basis}' \\
+    subcluster.R --input '${obj}' --basis '${basis}' \\
         --clusters '${params.subcluster_clusters}' --resolution ${params.subcluster_res} \\
         --knn_k ${params.subcluster_knn_k} --n_iterations ${params.n_iterations} \\
         --n_pcs ${params.n_pcs} --dims_use '${params.subcluster_dims}' \\

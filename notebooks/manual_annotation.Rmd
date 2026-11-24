@@ -35,7 +35,7 @@ params:
 Explores the **discovery** output of run `run_id` (the merged Giotto object, before annotation)
 and writes the `cluster_id,label` CSV that the `annotate` stage (`bin/apply_labels.R`) consumes.
 
-Paths follow `run.sh`: every run lives beside this repository in `Runs/<run_id>/results/`. Re-knit for another run or resolution by overriding params, e.g.
+Paths follow `cosmx-nf`: every run lives beside this repository in `Runs/<run_id>/results/`, or in its project's `Runs/`. Re-knit for another run or resolution by overriding params, e.g.
 `rmarkdown::render("manual_annotation.Rmd", params = list(run_id = "full", cluster_basis = "leiden_clus_res0.8"))`.
 
 ```{r setup, include=FALSE}
@@ -57,6 +57,8 @@ library(tidyverse)
 
 Sys.setenv(KMP_DUPLICATE_LIB_OK = "TRUE")
 if (nzchar(params$python_path)) Sys.setenv(RETICULATE_PYTHON = params$python_path)
+# Giotto's Python for loadGiotto()
+if (nzchar(Sys.getenv("RETICULATE_PYTHON"))) options(giotto.py_path = Sys.getenv("RETICULATE_PYTHON"))
 
 find_pipe <- function(d = getwd()) {
   while (!file.exists(file.path(d, "main.nf"))) {
@@ -69,7 +71,9 @@ find_pipe <- function(d = getwd()) {
 }
 
 PIPE_DIR    <- find_pipe()
-RES_DIR     <- file.path(dirname(PIPE_DIR), "Runs", params$run_id, "results")
+# Runs live beside the pipeline, or in the project cosmx-nf names in COSMX_NF_RUNS
+RUNS_DIR    <- Sys.getenv("COSMX_NF_RUNS", file.path(dirname(PIPE_DIR), "Runs"))
+RES_DIR     <- file.path(RUNS_DIR, params$run_id, "results")
 # Subcluster columns live on the subcluster object, Leiden columns on the discover one
 IS_SUB      <- startsWith(params$cluster_basis, "sub_")
 GIOTTO_DIR  <- if (nzchar(params$giotto_dir)) params$giotto_dir else
@@ -492,8 +496,7 @@ ggplot(scores, aes(cluster, cell_type, fill = score)) +
 
 ```{r Label template}
 
-# Margin is the gap to the runner-up. Small margin + high best_score: two sibling types tie.
-# Small margin + best_score near 0: nothing is enriched, so best_guess is left blank.
+# One row per cluster: best and second guess, margin, top 5 markers, blank label
 top_markers <- top |>
   arrange(ranking) |>
   summarise(top_markers = str_c(head(feats, 5), collapse = ";"), .by = cluster) |>
@@ -791,7 +794,7 @@ cat("label_map <- c(\n",
 
 ```{r Label map, class.source='fold-show'}
 
-# EDIT: replace the seed below with your reviewed labels (paste the scaffold above), e.g.
+# Replace with your reviewed labels from the scaffold above, for example
 # label_map <- c("1" = "PT", "2" = "CNT_CD", "3.1" = "Fibroblast", "3.2" = "Macrophage")
 label_map <- suggested
 
@@ -829,9 +832,9 @@ if (length(unlabelled)) {
   cat("[OK] All", length(clusters), "clusters in", CLUSTER_COL, "are labeled.\n")
 }
 
-cat("\nLaunch the annotate stage with:\n")
-cat(str_glue("  cd {PIPE_DIR} && ./run.sh {params$run_id} --stage annotate ",
-             "--labels {LABELS_OUT} --cluster_basis {CLUSTER_COL} -profile server"), "\n")
+cat("\nCurate them in the run's labels folder, then launch cci (annotate and spatial run first):\n")
+cat(str_glue("  mkdir -p {dirname(RES_DIR)}/labels && cp -n {LABELS_OUT} {dirname(RES_DIR)}/labels/"), "\n")
+cat(str_glue("  cd {dirname(RUNS_DIR)} && {PIPE_DIR}/cosmx-nf {params$run_id} cci"), "\n")
 
 ```
 
@@ -1197,7 +1200,7 @@ walk(pairs, \(p) {
 
 ```{r Merge table}
 
-# One row per observed label combination, largest first; fill merged_label to build a labels CSV
+# One row per label combination, largest first, with a blank merged_label to fill
 merge_table <- cells |>
   count(across(all_of(compare_cols)), sort = TRUE) |>
   mutate(pct = round(100 * n / sum(n), 2), merged_label = "")
