@@ -53,12 +53,19 @@ make_run <- function() {
   root
 }
 
+# Points the app at the made-up run and unsets every other COSMX_ variable of the shell
+local_run <- function(root, env = parent.frame()) {
+  set <- setdiff(grep("^COSMX_", names(Sys.getenv()), value = TRUE), "COSMX_NF")
+  withr::local_envvar(c(setNames(rep(NA_character_, length(set)), set),
+                        COSMX_NF = file.path(root, "results")), .local_envir = env)
+}
+
 app_dir <- normalizePath(testthat::test_path("..", "..", "shiny"))
 source(testthat::test_path("..", "..", "bin", "label_state.R"))
 
 test_that("Set saves the clustering's labels and names it for cell_type", {
   root <- make_run()
-  withr::local_envvar(COSMX_NF = file.path(root, "results"))
+  local_run(root)
   app <- shiny::shinyAppDir(app_dir)
   shiny::testServer(app, {
     session$setInputs(cl_basis = "leiden_clus_res0.3", cl_pick = "1", cl_label = "PT_injured")
@@ -75,7 +82,7 @@ test_that("Set saves the clustering's labels and names it for cell_type", {
 
 test_that("uploaded low-confidence edits change the display label only, and are saved", {
   root <- make_run()
-  withr::local_envvar(COSMX_NF = file.path(root, "results"))
+  local_run(root)
   up <- tempfile(fileext = ".csv")
   write.csv(
     data.frame(
@@ -104,7 +111,7 @@ test_that("uploaded low-confidence edits change the display label only, and are 
 
 test_that("Use for cell_type names the clustering and saves its labels", {
   root <- make_run()
-  withr::local_envvar(COSMX_NF = file.path(root, "results"))
+  local_run(root)
   app <- shiny::shinyAppDir(app_dir)
   shiny::testServer(app, {
     session$setInputs(cl_basis = "leiden_clus_res0.3")
@@ -116,7 +123,7 @@ test_that("Use for cell_type names the clustering and saves its labels", {
 
 test_that("Spatial shows one sample at a time, other views every sample", {
   root <- make_run()
-  withr::local_envvar(COSMX_NF = file.path(root, "results"))
+  local_run(root)
   app <- shiny::shinyAppDir(app_dir)
   shiny::testServer(app, {
     session$setInputs(view = "Spatial", cby = "custom_annotation", samples = c("s1", "s2"),
@@ -137,7 +144,7 @@ test_that("display colourings slash low-confidence cells; label colourings use C
     file.path(root, "labels", "label_overrides.csv"),
     row.names = FALSE
   )
-  withr::local_envvar(COSMX_NF = file.path(root, "results"))
+  local_run(root)
   app <- shiny::shinyAppDir(app_dir)
   shiny::testServer(app, {
     session$setInputs(view = "UMAP", cby = "custom_display", samples = c("s1", "s2"),
@@ -186,7 +193,7 @@ test_that("without COSMX_NF the app reads the run launched last that has a bundl
 
 test_that("figure size scales the plot's text and points, and the plot takes the measured height", {
   root <- make_run()
-  withr::local_envvar(COSMX_NF = file.path(root, "results"))
+  local_run(root)
   app <- shiny::shinyAppDir(app_dir)
   shiny::testServer(app, {
     session$setInputs(view = "UMAP", cby = "custom_annotation", samples = c("s1", "s2"),
@@ -210,7 +217,7 @@ test_that("figure size scales the plot's text and points, and the plot takes the
 
 test_that("on a label colouring, Top DE lists the clusters carrying the highlighted labels", {
   root <- make_run()
-  withr::local_envvar(COSMX_NF = file.path(root, "results"))
+  local_run(root)
   app <- shiny::shinyAppDir(app_dir)
   shiny::testServer(app, {
     session$setInputs(cby = "custom_annotation", cl_basis = "leiden_clus_res0.3")
@@ -239,4 +246,18 @@ test_that("the live label columns head the Colour by list", {
   expect_equal(names(g)[1], "Labels - live (labels folder)")
   expect_equal(unlist(g[[1]]), env$LIVE_COLS)
   expect_equal(unlist(g[["Annotation - manual"]]), c("cell_type", "cell_type_confidence"))
+})
+
+test_that("labels go to the made-up run when the shell names another labels folder", {
+  decoy <- withr::local_tempdir()
+  withr::local_envvar(COSMX_LABELS = decoy, COSMX_NF_RUNS = decoy)
+  root <- make_run()
+  local_run(root)
+  app <- shiny::shinyAppDir(app_dir)
+  shiny::testServer(app, {
+    session$setInputs(cl_basis = "leiden_clus_res0.3")
+    session$setInputs(cl_use = 1)
+  })
+  expect_true(file.exists(file.path(root, "labels", "cluster_basis.txt")))
+  expect_length(list.files(decoy), 0)
 })
